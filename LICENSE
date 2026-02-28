@@ -1,0 +1,141 @@
+Fair Code License
+
+Licensor: Farport Software S.r.l.
+Software: lite-auth-proxy
+
+---
+
+## 1. Grant of Rights
+
+Subject to the terms and conditions of this Fair Code License, Licensor hereby grants
+you a worldwide, non-exclusive, no-charge, royalty-free, irrevocable license to
+reproduce, prepare derivative works of, publicly display, publicly perform, and
+distribute this software and such derivative works, in source code and object code form.
+
+## 2. Restrictions
+
+The license granted in Section 1 does not include the right to:
+
+### 2.1 Selling or Reselling
+You may not sell, resell, rent, lease, transfer, assign, or otherwise transfer for
+valuable consideration this software or any derivative thereof, whether in binary or
+source code form.
+
+### 2.2 Commercial SaaS Offering
+You may not offer this software, or any derivative thereof, as a Software-as-a-Service
+(SaaS), Platform-as-a-Service (PaaS), or any other hosted service that generates
+revenue directly or indirectly from subscription fees, usage fees, or similar
+commercial arrangements.
+
+### 2.3 Warranty and Liability Disclaimer
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF
+CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE
+OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+## 3. Permitted Uses
+
+You are permitted to:
+
+- Use this software internally for your organization, department, or team
+- Use this software for non-commercial purposes
+- Modify this software for your internal use
+- Incorporate this software into applications for internal use only
+- Create derivative works for internal use
+- Study and learn from the source code
+- Contribute modifications back to the project
+
+## 4. Commercial License
+
+If you wish to use this software for any commercial purpose prohibited by Section 2
+(including selling, reselling, or offering as a commercial service), you must obtain
+a separate commercial license from the Licensor. Please contact the project
+maintainers for commercial licensing inquiries.
+
+## 4a. Farport Software S.r.l. Consulting Services Exception
+
+Notwithstanding the restrictions in Section 2, Farport Software S.r.l. and its
+affiliates are hereby granted an irrevocable, transferable right to utilize this
+software directly or indirectly as part of their professional consulting services,
+technical implementations, system integrations, and customer solutions.
+
+When Farport Software S.r.l. delivers consulting engagements, implementation services,
+or solution deployments to its clients that incorporate, utilize, or depend upon this
+software, the delivery of such services shall be deemed to include an implicit,
+non-exclusive commercial license grant to the client. This implicit license applies to
+the specific software instance and use case covered by the consulting engagement and
+does not require explicit written agreement unless the client contract explicitly
+excludes or restricts such license grants.
+
+The scope of the implicit commercial license granted to Farport's clients is limited
+to: (a) internal use of the software as deployed and configured for that specific
+engagement, (b) operation and maintenance of the software as part of the provided
+solution, and (c) reasonable modifications necessary to integrate with the client's
+existing systems. The client may not resell, relicense, sub-license, or independently
+commercialize the software beyond the scope of the engagement without prior written
+authorization from Licensor.
+
+## 5. Reciprocity
+
+If you make modifications to this software, you are encouraged to contribute them
+back to the project. Modifications shared with the project can be used under this
+Fair Code License by all users.
+
+## 6. Termination
+
+This license is automatically terminated if you violate any of its terms. Upon
+termination, you must cease all use and destroy all copies of this software in your
+possession.
+
+## 7. Governing Law
+
+This license shall be governed by and construed in accordance with the laws of the
+jurisdiction where the Licensor resides, without regard to its conflict of law
+provisions.
+
+## 8. Entire Agreement
+
+This Fair Code License constitutes the entire agreement between you and Licensor
+regarding the software and supersedes all prior and contemporaneous agreements,
+whether written or oral, relating to the software.
+
+---
+
+## Definitions
+
+**Fair Code License**: A license that permits free use for internal purposes while
+restricting commercial use without a separate commercial license agreement.
+
+**Commercial Use**: Any use intended to generate revenue, either directly or indirectly,
+including but not limited to selling, reselling, licensing, or offering as a service.
+
+**Internal Use**: Use within a single organization, department, team, or individual for
+purposes not involving external revenue generation or public distribution.
+
+**Derivative Work**: Any modification, enhancement, improvement, or adaptation of the
+original software.
+
+---
+
+## How to Use this License
+
+1. Include this LICENSE file in the root of your repository
+2. Add a notice in your README or main documentation
+3. Include copyright headers in source files (optional but recommended)
+
+### Recommended Copyright Header for Source Files:
+
+```
+// Copyright (c) 2026 lite-auth-proxy contributors
+// Licensed under the Fair Code License
+// See LICENSE file in the project root for details
+```
+
+---
+
+## Contact
+
+For inquiries regarding commercial licenses or other licensing arrangements, please
+contact the project maintainers at info@farport.co.

@@ -1,0 +1,68 @@
+# Build artifacts
+bin/
+dist/
+*.o
+*.a
+*.so
+.DS_Store
+
+# Go binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Go test binary
+*.test
+
+# Output of go coverage tool
+*.out
+coverage.html
+coverage.out
+
+# Go workspace file
+go.work
+
+# Dependency directories
+vendor/
+
+# IDE/Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+*.sublime-project
+*.sublime-workspace
+
+# OS files
+.DS_Store
+Thumbs.db
+.env.local
+
+# Configuration files with secrets
+config.local.toml
+.env
+.env.*.local
+
+# Docker files
+.dockerignore
+
+# Logs
+*.log
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Test data and fixtures
+testdata/jwt/Private_Key
+testdata/jwt/*.key
+testdata/jwt/*.pem
+
+# Cloud Build artifacts
+cloud-build-*.log

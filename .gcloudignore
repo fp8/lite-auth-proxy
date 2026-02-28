@@ -1,0 +1,35 @@
+# .gcloudignore - Exclude files not needed by Cloud Build
+#
+# This file specifies files that should not be uploaded to Google Cloud
+# when running `gcloud builds submit` or when Cloud Build triggers run.
+#
+# See: https://cloud.google.com/sdk/gcloud/reference/topic/gcloudignore
+
+# Include all patterns from .gitignore
+#!include:.gitignore
+
+# Additional exclusions specific to Cloud Build
+# (These files may be tracked in git but aren't needed for the build)
+
+# Git metadata
+.git/
+.gitignore
+.gitattributes
+
+# Documentation (not needed for Docker build)
+docs/
+*.md
+!deployments/*.md
+
+# Makefile (Cloud Build uses cloudbuild.yaml directly)
+Makefile
+
+# Test artifacts
+testdata/
+
+# CI/CD configs for other platforms
+.github/
+.gitlab-ci.yml
+.travis.yml
+azure-pipelines.yml
+Jenkinsfile

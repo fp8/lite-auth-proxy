@@ -1,0 +1,40 @@
+# Test configuration for lite-auth-proxy
+
+[server]
+port = 9999
+target_url = "http://localhost:8080"
+strip_prefix = ""
+include_paths = ["/*"]
+exclude_paths = ["/healthz", "/metrics"]
+shutdown_timeout_secs = 5
+
+[server.health_check]
+path = "/healthz"
+target = ""
+
+[security.rate_limit]
+enabled = false
+requests_per_min = 100
+ban_for_min = 1
+
+[auth]
+header_prefix = "X-AUTH-"
+
+[auth.jwt]
+enabled = true
+issuer = "https://test-issuer.example.com"
+audience = "test-audience"
+tolerance_secs = 30
+cache_ttl_mins = 60
+
+[auth.jwt.filters]
+email_verified = "true"
+
+[auth.jwt.mappings]
+email = "USER-EMAIL"
+sub = "USER-ID"
+
+[auth.api_key]
+enabled = false
+name = "X-API-KEY"
+value = "{{ENV.API_KEY_SECRET}}"

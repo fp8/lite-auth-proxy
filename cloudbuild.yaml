@@ -1,0 +1,75 @@
+steps:
+  # Step 1: Extract version from Go source code
+  - id: 'version'
+    name: 'bash'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        VERSION=$$(grep 'Version = ' cmd/proxy/main.go | head -1 | sed 's/.*"\(.*\)".*/\1/')
+        MAJOR_MINOR=$$(echo $$VERSION | cut -d. -f1,2)
+        echo "Full version: $$VERSION"
+        echo "Major.Minor: $$MAJOR_MINOR"
+        echo $$VERSION > /workspace/version.txt
+        echo $$MAJOR_MINOR > /workspace/major-minor.txt
+
+  # Step 2: Run tests
+  - id: 'test'
+    name: 'golang:1.24-alpine'
+    entrypoint: 'sh'
+    args:
+      - '-c'
+      - |
+        apk add --no-cache ca-certificates git
+        go test ./... -v -count=1 -timeout=10m
+    env:
+      - 'GO111MODULE=on'
+      - 'GOPROXY=https://proxy.golang.org,direct'
+    waitFor: ['version']
+
+  # Step 3: Build Docker image
+  - id: 'build'
+    name: 'gcr.io/cloud-builders/docker'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        VERSION=$$(cat /workspace/version.txt)
+        MAJOR_MINOR=$$(cat /workspace/major-minor.txt)
+        DOCKER_REGISTRY=${_DOCKER_REGISTRY}
+        DOCKER_REPO_NAME=${_DOCKER_REPO_NAME}
+        docker build \
+          --build-arg VERSION=$$VERSION \
+          -t $$DOCKER_REGISTRY/${PROJECT_ID}/$$DOCKER_REPO_NAME/lite-auth-proxy:$$VERSION \
+          -t $$DOCKER_REGISTRY/${PROJECT_ID}/$$DOCKER_REPO_NAME/lite-auth-proxy:$$MAJOR_MINOR \
+          -f Dockerfile .
+    waitFor: ['test']
+
+  # Step 4: Push Docker image
+  - id: 'push'
+    name: 'gcr.io/cloud-builders/docker'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        VERSION=$$(cat /workspace/version.txt)
+        MAJOR_MINOR=$$(cat /workspace/major-minor.txt)
+        DOCKER_REGISTRY=${_DOCKER_REGISTRY}
+        DOCKER_REPO_NAME=${_DOCKER_REPO_NAME}
+        docker push $$DOCKER_REGISTRY/${PROJECT_ID}/$$DOCKER_REPO_NAME/lite-auth-proxy:$$VERSION
+        docker push $$DOCKER_REGISTRY/${PROJECT_ID}/$$DOCKER_REPO_NAME/lite-auth-proxy:$$MAJOR_MINOR
+    waitFor: ['build']
+
+# Note: The images: block has been deliberately removed.
+
+# Substitution variables with defaults
+substitutions:
+  _DOCKER_REGISTRY: 'europe-docker.pkg.dev'
+  _DOCKER_REPO_NAME: 'docker'
+
+# Build options
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+# Timeout for the entire build
+timeout: '600s'

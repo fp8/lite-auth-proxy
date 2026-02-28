@@ -1,0 +1,50 @@
+# lite-auth-proxy configuration
+# This is the default configuration file
+
+[server]
+port = 8888                                    # HTTP listening port
+target_url = "http://localhost:8080"           # Downstream service URL to proxy to
+strip_prefix = ""                              # URL prefix to strip before forwarding (e.g., "/api")
+include_paths = ["/*"]                         # Paths requiring authentication (glob patterns)
+exclude_paths = ["/healthz"]                   # Paths that bypass authentication
+shutdown_timeout_secs = 10                     # Graceful shutdown timeout
+
+[server.health_check]
+path = "/healthz"                              # Health check endpoint path
+target = ""                                    # Optional: proxy health check to downstream (e.g., "http://localhost:8080/health")
+                                               # If empty, returns local 200 OK response
+
+[security.rate_limit]
+enabled = true                                 # Enable/disable rate limiting
+requests_per_min = 60                          # Max requests per IP per minute
+ban_for_min = 5                                # Ban duration when rate limit exceeded
+
+[auth]
+header_prefix = "X-AUTH-"                      # Prefix for injected authentication headers
+
+[auth.jwt]
+enabled = true                                 # Enable JWT authentication
+issuer = "https://securetoken.google.com/{{ENV.GOOGLE_CLOUD_PROJECT}}"
+audience = "{{ENV.GOOGLE_CLOUD_PROJECT}}"
+tolerance_secs = 30                            # Clock skew tolerance for exp/nbf validation
+cache_ttl_mins = 1440                          # JWKS key cache TTL (24 hours)
+
+[auth.jwt.filters]
+# Claim validation rules (exact match or /regex/)
+# Example: email_verified = "true"
+# Example: email = "/.*@company\\.com$/"
+
+[auth.jwt.mappings]
+# Map JWT claims to HTTP headers: claim_key = "HEADER-SUFFIX"
+# Example: role = "USER-ROLE" → X-AUTH-USER-ROLE: admin,user
+sub = "USER-ID"
+email = "USER-EMAIL"
+
+[auth.api_key]
+enabled = false                                # Enable API-Key authentication (independent method)
+name = "X-API-KEY"                             # Header to check for API key
+value = "{{ENV.API_KEY_SECRET}}"               # Expected API key value
+
+[auth.api_key.payload]
+# Static headers to inject when authenticated via API key
+# Example: service = "internal" → X-AUTH-SERVICE: internal

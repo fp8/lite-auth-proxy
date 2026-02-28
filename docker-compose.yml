@@ -1,0 +1,28 @@
+version: "3.8"
+
+services:
+  echo:
+    image: mendhak/http-https-echo:39
+    ports:
+      - "8080:8080"
+    stdin_open: true
+    tty: true
+
+  proxy:
+    image: ${IMAGE_NAME}:${IMAGE_TAG}
+    ports:
+      - "8888:8888"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8888/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 1s
+    environment:
+      GOOGLE_CLOUD_PROJECT: ${GOOGLE_CLOUD_PROJECT}
+      PROXY_SERVER_TARGET_URL: ${PROXY_SERVER_TARGET_URL:-http://echo:8080}
+      PROXY_SECURITY_RATE_LIMIT_REQUESTS_PER_MIN: 5
+      PROXY_SERVER_HEALTH_CHECK_TARGET: ${PROXY_SERVER_TARGET_URL:-http://echo:8080}/healthz
+      PROXY_LOG_MODE: ${PROXY_LOG_MODE:-development}
+    depends_on:
+      - echo
