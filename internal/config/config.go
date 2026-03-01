@@ -136,6 +136,12 @@ func applyEnvOverrides(config *Config) error {
 	if val := os.Getenv("PROXY_SERVER_STRIP_PREFIX"); val != "" {
 		config.Server.StripPrefix = val
 	}
+	if val := os.Getenv("PROXY_SERVER_INCLUDE_PATHS"); val != "" {
+		config.Server.IncludePaths = splitCSV(val)
+	}
+	if val := os.Getenv("PROXY_SERVER_EXCLUDE_PATHS"); val != "" {
+		config.Server.ExcludePaths = splitCSV(val)
+	}
 	if val := os.Getenv("PROXY_SERVER_SHUTDOWN_TIMEOUT_SECS"); val != "" {
 		timeout, err := strconv.Atoi(val)
 		if err != nil {
@@ -194,6 +200,22 @@ func applyEnvOverrides(config *Config) error {
 	if val := os.Getenv("PROXY_AUTH_JWT_AUDIENCE"); val != "" {
 		config.Auth.JWT.Audience = substituteEnvVars(val)
 	}
+	if val := os.Getenv("PROXY_AUTH_JWT_TOLERANCE_SECS"); val != "" {
+		tolerance, err := strconv.Atoi(val)
+		if err != nil {
+			return fmt.Errorf("invalid PROXY_AUTH_JWT_TOLERANCE_SECS: %w", err)
+		}
+		config.Auth.JWT.ToleranceSecs = tolerance
+	}
+	if val := os.Getenv("PROXY_AUTH_JWT_CACHE_TTL_MINS"); val != "" {
+		cacheTTL, err := strconv.Atoi(val)
+		if err != nil {
+			return fmt.Errorf("invalid PROXY_AUTH_JWT_CACHE_TTL_MINS: %w", err)
+		}
+		config.Auth.JWT.CacheTTLMins = cacheTTL
+	}
+	config.Auth.JWT.Filters = applyJWTMapOverrides("PROXY_AUTH_JWT_FILTERS_", config.Auth.JWT.Filters)
+	config.Auth.JWT.Mappings = applyJWTMapOverrides("PROXY_AUTH_JWT_MAPPINGS_", config.Auth.JWT.Mappings)
 
 	// API Key overrides
 	if val := os.Getenv("PROXY_AUTH_API_KEY_ENABLED"); val != "" {
@@ -209,8 +231,47 @@ func applyEnvOverrides(config *Config) error {
 	if val := os.Getenv("PROXY_AUTH_API_KEY_VALUE"); val != "" {
 		config.Auth.APIKey.Value = substituteEnvVars(val)
 	}
+	config.Auth.APIKey.Payload = applyJWTMapOverrides("PROXY_AUTH_API_KEY_PAYLOAD_", config.Auth.APIKey.Payload)
 
 	return nil
+}
+
+func splitCSV(value string) []string {
+	parts := strings.Split(value, ",")
+	result := make([]string, 0, len(parts))
+	for _, part := range parts {
+		item := strings.TrimSpace(part)
+		if item == "" {
+			continue
+		}
+		result = append(result, item)
+	}
+	return result
+}
+
+func applyJWTMapOverrides(prefix string, target map[string]string) map[string]string {
+	if target == nil {
+		target = map[string]string{}
+	}
+
+	for _, envVar := range os.Environ() {
+		parts := strings.SplitN(envVar, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		key := parts[0]
+		value := parts[1]
+		if !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		claimKey := strings.ToLower(strings.TrimPrefix(key, prefix))
+		if claimKey == "" {
+			continue
+		}
+		target[claimKey] = substituteEnvVars(value)
+	}
+
+	return target
 }
 
 // setDefaults sets default values for optional configuration fields

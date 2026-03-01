@@ -1,8 +1,12 @@
 package jwt
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/fp8/lite-auth-proxy/internal/config"
 )
 
 func TestEvaluateFiltersExactMatchPass(t *testing.T) {
@@ -78,4 +82,43 @@ func TestEvaluateFiltersMissingClaim(t *testing.T) {
 	if !strings.Contains(err.Error(), "missing") {
 		t.Fatalf("expected missing claim error message, got: %v", err)
 	}
+}
+
+func TestEnvOverrideFilterRejectsClaim(t *testing.T) {
+	_ = os.Setenv("PROXY_AUTH_JWT_FILTERS_HD", "farport.co")
+	defer func() { _ = os.Unsetenv("PROXY_AUTH_JWT_FILTERS_HD") }()
+
+	configContent := `
+[server]
+target_url = "http://localhost:8080"
+
+[auth.jwt]
+enabled = true
+issuer = "https://example.com"
+audience = "test"
+
+[auth.jwt.filters]
+hd = "trybuyme.com"
+`
+
+	configPath := writeTempConfig(t, configContent)
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("Failed to load config: %v", err)
+	}
+
+	claims := Claims{"hd": "trybuyme.com"}
+	if err := EvaluateFilters(claims, cfg.Auth.JWT.Filters); err == nil {
+		t.Fatal("expected filter mismatch error due to env override, got nil")
+	}
+}
+
+func writeTempConfig(t *testing.T, content string) string {
+	t.Helper()
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.toml")
+	if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+		t.Fatalf("Failed to create temp config: %v", err)
+	}
+	return configPath
 }

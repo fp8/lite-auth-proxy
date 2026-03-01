@@ -175,12 +175,24 @@ value = "{{ENV.TEST_API_SECRET}}"
 func TestEnvVarOverrides(t *testing.T) {
 	_ = os.Setenv("PROXY_SERVER_PORT", "7777")
 	_ = os.Setenv("PROXY_SERVER_TARGET_URL", "http://overridden.com")
+	_ = os.Setenv("PROXY_SERVER_INCLUDE_PATHS", "/api/*, /admin/*")
+	_ = os.Setenv("PROXY_SERVER_EXCLUDE_PATHS", "/healthz, /metrics")
 	_ = os.Setenv("PROXY_SECURITY_RATE_LIMIT_ENABLED", "false")
 	_ = os.Setenv("PROXY_SECURITY_RATE_LIMIT_BAN_FOR_MIN", "15")
+	_ = os.Setenv("PROXY_AUTH_JWT_FILTERS_HD", "farport.co")
+	_ = os.Setenv("PROXY_AUTH_JWT_TOLERANCE_SECS", "45")
+	_ = os.Setenv("PROXY_AUTH_JWT_CACHE_TTL_MINS", "30")
+	_ = os.Setenv("PROXY_AUTH_API_KEY_PAYLOAD_SERVICE", "internal")
 	defer func() { _ = os.Unsetenv("PROXY_SERVER_PORT") }()
 	defer func() { _ = os.Unsetenv("PROXY_SERVER_TARGET_URL") }()
+	defer func() { _ = os.Unsetenv("PROXY_SERVER_INCLUDE_PATHS") }()
+	defer func() { _ = os.Unsetenv("PROXY_SERVER_EXCLUDE_PATHS") }()
 	defer func() { _ = os.Unsetenv("PROXY_SECURITY_RATE_LIMIT_ENABLED") }()
 	defer func() { _ = os.Unsetenv("PROXY_SECURITY_RATE_LIMIT_BAN_FOR_MIN") }()
+	defer func() { _ = os.Unsetenv("PROXY_AUTH_JWT_FILTERS_HD") }()
+	defer func() { _ = os.Unsetenv("PROXY_AUTH_JWT_TOLERANCE_SECS") }()
+	defer func() { _ = os.Unsetenv("PROXY_AUTH_JWT_CACHE_TTL_MINS") }()
+	defer func() { _ = os.Unsetenv("PROXY_AUTH_API_KEY_PAYLOAD_SERVICE") }()
 
 	configContent := `
 [server]
@@ -195,6 +207,14 @@ ban_for_min = 5
 enabled = true
 issuer = "https://example.com"
 audience = "test"
+
+[auth.jwt.filters]
+hd = "trybuyme.com"
+
+[auth.api_key]
+enabled = true
+name = "X-API-KEY"
+value = "secret"
 `
 
 	configPath := createTempConfig(t, configContent)
@@ -209,11 +229,29 @@ audience = "test"
 	if cfg.Server.TargetURL != "http://overridden.com" {
 		t.Errorf("Expected target_url override, got %s", cfg.Server.TargetURL)
 	}
+	if len(cfg.Server.IncludePaths) != 2 || cfg.Server.IncludePaths[0] != "/api/*" || cfg.Server.IncludePaths[1] != "/admin/*" {
+		t.Errorf("Expected include_paths override, got %v", cfg.Server.IncludePaths)
+	}
+	if len(cfg.Server.ExcludePaths) != 2 || cfg.Server.ExcludePaths[0] != "/healthz" || cfg.Server.ExcludePaths[1] != "/metrics" {
+		t.Errorf("Expected exclude_paths override, got %v", cfg.Server.ExcludePaths)
+	}
 	if cfg.Security.RateLimit.Enabled {
 		t.Error("Expected rate limit to be disabled via env override")
 	}
 	if cfg.Security.RateLimit.BanForMin != 15 {
 		t.Errorf("Expected ban_for_min override to 15, got %d", cfg.Security.RateLimit.BanForMin)
+	}
+	if cfg.Auth.JWT.Filters["hd"] != "farport.co" {
+		t.Errorf("Expected JWT filter override for hd to be farport.co, got %s", cfg.Auth.JWT.Filters["hd"])
+	}
+	if cfg.Auth.JWT.ToleranceSecs != 45 {
+		t.Errorf("Expected JWT tolerance override to 45, got %d", cfg.Auth.JWT.ToleranceSecs)
+	}
+	if cfg.Auth.JWT.CacheTTLMins != 30 {
+		t.Errorf("Expected JWT cache TTL override to 30, got %d", cfg.Auth.JWT.CacheTTLMins)
+	}
+	if cfg.Auth.APIKey.Payload["service"] != "internal" {
+		t.Errorf("Expected API key payload override for service to be internal, got %s", cfg.Auth.APIKey.Payload["service"])
 	}
 }
 
