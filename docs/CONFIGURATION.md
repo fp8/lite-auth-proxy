@@ -74,6 +74,11 @@ target = ""
 - **Local mode** (target = ""): Returns `{"status":"ok"}` with 200 OK
 - **Proxy mode** (target set): Forwards health check to downstream and returns its response
 
+**CLI Health Check:**
+- Use `-healthcheck` to run the configured health check and exit.
+- When `server.health_check.target` is set (or `PROXY_SERVER_HEALTH_CHECK_TARGET`), the command performs an HTTP GET to the target and returns non-zero if it fails.
+- When the target is empty, the command exits successfully.
+
 ## Security Configuration
 
 ### Rate Limiting

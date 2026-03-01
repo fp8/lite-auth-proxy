@@ -29,17 +29,20 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
 # No shell, no package manager, only the binary and required files
 FROM gcr.io/distroless/static-debian12:nonroot
 
+# Build arguments (re-declared for this stage)
+ARG VERSION=0.0.1
+
+# Image metadata
+LABEL org.opencontainers.image.version=${VERSION}
+
 # Copy the compiled binary from builder
 COPY --from=builder /lite-auth-proxy /lite-auth-proxy
 
 # Copy default configuration (optional; can be overridden via mount/env)
-COPY configs/config.toml /configs/config.toml
+COPY config/config.toml /config/config.toml
 
 # Expose the default listening port
 EXPOSE 8888
 
 # Use JSON entrypoint format to avoid shell interpretation
 ENTRYPOINT ["/lite-auth-proxy"]
-
-# Default runtime arguments
-CMD ["-config", "/configs/config.toml"]

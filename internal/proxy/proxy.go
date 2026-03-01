@@ -42,7 +42,7 @@ func NewHandler(cfg *config.Config, logger *slog.Logger) (http.Handler, error) {
 		return nil, fmt.Errorf("invalid target_url: %w", err)
 	}
 
-	reverseProxy := newReverseProxy(targetURL, cfg.Server.StripPrefix)
+	reverseProxy := newReverseProxy(targetURL, cfg.Server.StripPrefix, false)
 	reverseProxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, proxyErr error) {
 		writeJSON(w, http.StatusBadGateway, errorResponse{
 			Error:   "bad_gateway",
@@ -59,7 +59,7 @@ func NewHandler(cfg *config.Config, logger *slog.Logger) (http.Handler, error) {
 		if err != nil {
 			return nil, fmt.Errorf("invalid health_check.target: %w", err)
 		}
-		healthProxy = newHealthProxy(healthTarget)
+		healthProxy = newReverseProxy(healthTarget, "", true)
 		healthProxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, proxyErr error) {
 			writeJSON(w, http.StatusBadGateway, errorResponse{
 				Error:   "bad_gateway",
@@ -285,30 +285,25 @@ func writeJSON(w http.ResponseWriter, status int, payload interface{}) {
 	}
 }
 
-func newReverseProxy(target *url.URL, stripPrefix string) *httputil.ReverseProxy {
+func newReverseProxy(target *url.URL, stripPrefix string, useExactPath bool) *httputil.ReverseProxy {
 	director := func(req *http.Request) {
 		req.URL.Scheme = target.Scheme
 		req.URL.Host = target.Host
 		req.Host = target.Host
 
-		if stripPrefix != "" && strings.HasPrefix(req.URL.Path, stripPrefix) {
-			req.URL.Path = strings.TrimPrefix(req.URL.Path, stripPrefix)
-			if req.URL.Path == "" {
-				req.URL.Path = "/"
+		if useExactPath {
+			// For health checks: use exact target path and query
+			req.URL.Path = target.Path
+			req.URL.RawQuery = target.RawQuery
+		} else {
+			// For regular proxying: optionally strip prefix from incoming request path
+			if stripPrefix != "" && strings.HasPrefix(req.URL.Path, stripPrefix) {
+				req.URL.Path = strings.TrimPrefix(req.URL.Path, stripPrefix)
+				if req.URL.Path == "" {
+					req.URL.Path = "/"
+				}
 			}
 		}
-	}
-
-	return &httputil.ReverseProxy{Director: director}
-}
-
-func newHealthProxy(target *url.URL) *httputil.ReverseProxy {
-	director := func(req *http.Request) {
-		req.URL.Scheme = target.Scheme
-		req.URL.Host = target.Host
-		req.Host = target.Host
-		req.URL.Path = target.Path
-		req.URL.RawQuery = target.RawQuery
 	}
 
 	return &httputil.ReverseProxy{Director: director}
