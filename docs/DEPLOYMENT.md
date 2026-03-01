@@ -71,7 +71,7 @@ docker build \
 
 ### Test Locally
 
-The container image defaults to `-config /configs/config.toml` (set by Dockerfile `CMD`).
+The container image defaults to `-config /config/config.toml` (set by Dockerfile `CMD`).
 
 ```bash
 # Run container

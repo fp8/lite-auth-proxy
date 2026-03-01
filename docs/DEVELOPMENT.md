@@ -543,7 +543,7 @@ docker build -t lite-auth-proxy:dev .
 
 ### Run in Docker
 
-The image now defaults to `-config /configs/config.toml` via Dockerfile `CMD`.
+The image now defaults to `-config /config/config.toml` via Dockerfile `CMD`.
 
 ```bash
 # Using Make

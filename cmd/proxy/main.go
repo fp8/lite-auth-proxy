@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -18,17 +19,18 @@ import (
 
 var (
 	// Version is set via ldflags during build
-	Version = "1.0.2"
+	Version = "1.0.3"
 )
 
 const (
-	defaultConfigPath = "configs/config.toml"
+	defaultConfigPath = "/config/config.toml"
 )
 
 func main() {
-	// Parse command-line flags
-	configPath := flag.String("config", defaultConfigPath, "Path to configuration file")
-	flag.Parse()
+	configPath, healthcheckOnly, err := parseFlags(os.Args[1:], os.Stderr)
+	if err != nil {
+		os.Exit(2)
+	}
 
 	// Initialize logger
 	logMode := logging.GetLogModeFromEnv()
@@ -41,16 +43,25 @@ func main() {
 	)
 
 	// Load configuration
-	cfg, err := config.Load(*configPath)
+	cfg, err := config.Load(configPath)
 	if err != nil {
 		logger.Error("Failed to load configuration",
 			"error", err,
-			"config_path", *configPath,
+			"config_path", configPath,
 		)
 		os.Exit(1)
 	}
 
-	logger.Info("Configuration loaded successfully", "config_path", *configPath)
+	logger.Info("Configuration loaded successfully", "config_path", configPath)
+
+	if healthcheckOnly {
+		if err := runHealthCheck(cfg); err != nil {
+			logger.Error("Health check failed", "error", err)
+			os.Exit(1)
+		}
+		logger.Info("Health check OK")
+		return
+	}
 
 	// Log configuration summary
 	logConfigSummary(logger, cfg)
@@ -77,6 +88,42 @@ func main() {
 	if err := <-shutdownErrors; err != nil {
 		logger.Error("Server exited with error", "error", err)
 	}
+}
+
+func parseFlags(args []string, output io.Writer) (string, bool, error) {
+	fs := flag.NewFlagSet("lite-auth-proxy", flag.ContinueOnError)
+	fs.SetOutput(output)
+	configPath := fs.String("config", defaultConfigPath, "Path to configuration file")
+	healthcheckOnly := fs.Bool("healthcheck", false, "Run configured health check and exit")
+	if err := fs.Parse(args); err != nil {
+		return "", false, err
+	}
+	return *configPath, *healthcheckOnly, nil
+}
+
+func runHealthCheck(cfg *config.Config) error {
+	if cfg.Server.HealthCheck.Target == "" {
+		return nil
+	}
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	req, err := http.NewRequest(http.MethodGet, cfg.Server.HealthCheck.Target, nil)
+	if err != nil {
+		return fmt.Errorf("invalid health check target: %w", err)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("health check request failed: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, resp.Body)
+
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusBadRequest {
+		return fmt.Errorf("health check returned status %d", resp.StatusCode)
+	}
+
+	return nil
 }
 
 // logConfigSummary logs a summary of the loaded configuration

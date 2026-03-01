@@ -6,7 +6,8 @@
 .DEFAULT_GOAL := help
 
 # Variables
-VERSION?=$(shell grep 'Version = ' cmd/proxy/main.go | head -1 | sed 's/.*"\(.*\)".*/\1/')
+GO_VERSION?=$(shell grep 'Version = ' cmd/proxy/main.go | head -1 | sed 's/.*"\(.*\)".*/\1/')
+VERSION=dev
 MAJOR_MINOR=$(shell echo $(VERSION) | cut -d. -f1,2)
 BINARY_NAME=lite-auth-proxy
 BUILD_DIR=bin
@@ -65,6 +66,7 @@ lint:
 # Clean build artifacts
 clean:
 	@echo "Cleaning build artifacts..."
+	docker compose down --remove-orphans
 	rm -rf $(BUILD_DIR)
 	rm -f coverage.out coverage.html
 
@@ -102,15 +104,13 @@ docker-build:
 		echo "Error: DOCKER_PROJECT_ID or GOOGLE_CLOUD_PROJECT environment variable must be set"; \
 		exit 1; \
 	fi
-	@echo "Building Docker image: $(IMAGE_NAME):$(VERSION) and $(IMAGE_NAME):$(MAJOR_MINOR)..."
+	@echo "Building Docker image: $(IMAGE_NAME):$(VERSION)"
 	docker build \
-		--build-arg VERSION=$(VERSION) \
+		--build-arg VERSION=$(GO_VERSION) \
 		-t $(IMAGE_NAME):$(VERSION) \
-		-t $(IMAGE_NAME):$(MAJOR_MINOR) \
 		-f Dockerfile .
 	@echo "Docker images built successfully:"
 	@echo "  - $(IMAGE_NAME):$(VERSION)"
-	@echo "  - $(IMAGE_NAME):$(MAJOR_MINOR)"
 
 docker-run:
 	@if [ -z "$(GOOGLE_CLOUD_PROJECT)" ]; then \

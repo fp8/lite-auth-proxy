@@ -175,7 +175,7 @@ docker run -p 8888:8888 \
   lite-auth-proxy:latest
 
 # Image default config path (from Dockerfile CMD):
-#   -config /configs/config.toml
+#   -config /config/config.toml
 # Override if needed:
 docker run -p 8888:8888 \
   -e GOOGLE_CLOUD_PROJECT=your-project \
@@ -238,53 +238,16 @@ For detailed deployment instructions, see the [Deployment Guide](docs/Deployment
 
 ## Architecture
 
-```
-HTTP Request
-  ↓
-┌─────────────────────────────────────────────┐
-│ lite-auth-proxy                              │
-│                                             │
-│  ┌──────────────────────────────────────┐  │
-│  │ 1. Header Sanitization                │  │
-│  │    (Strip incoming X-AUTH-* headers)  │  │
-│  └───────────────┬──────────────────────┘  │
-│                  ↓                          │
-│  ┌──────────────────────────────────────┐  │
-│  │ 2. Path Filtering                     │  │
-│  │    (Include/Exclude patterns)         │  │
-│  └───────────────┬──────────────────────┘  │
-│                  ↓                          │
-│  ┌──────────────────────────────────────┐  │
-│  │ 3. Rate Limiting (Optional)           │  │
-│  │    (Per-IP with banning)              │  │
-│  └───────────────┬──────────────────────┘  │
-│                  ↓                          │
-│  ┌──────────────────────────────────────┐  │
-│  │ 4. Authentication                     │  │
-│  │    • JWT Token Validation             │  │
-│  │    • API-Key Validation               │  │
-│  └───────────────┬──────────────────────┘  │
-│                  ↓                          │
-│  ┌──────────────────────────────────────┐  │
-│  │ 5. Claim Filtering (JWT)              │  │
-│  │    (Exact match or regex)             │  │
-│  └───────────────┬──────────────────────┘  │
-│                  ↓                          │
-│  ┌──────────────────────────────────────┐  │
-│  │ 6. Header Injection                   │  │
-│  │    (Map claims to X-AUTH-* headers)   │  │
-│  └───────────────┬──────────────────────┘  │
-│                  ↓                          │
-│  ┌──────────────────────────────────────┐  │
-│  │ 7. URL Rewriting                      │  │
-│  │    (Strip prefix if configured)       │  │
-│  └───────────────┬──────────────────────┘  │
-└──────────────────┼──────────────────────────┘
-                   ↓
-         ┌─────────────────┐
-         │ Backend Service │
-         │  (Port 8080)    │
-         └─────────────────┘
+```mermaid
+flowchart TD
+    Start([HTTP Request]) --> Step1
+    Step1[Header Sanitization] --> |Strip incoming X-AUTH-* headers|Step2[Path Filtering]
+    Step2 --> |Check include/exclude patterns|Step3[Rate Limiting]
+    Step3 --> |Per-IP with automatic banning|Step4[Authentication]
+    Step4 --> |JWT token or API-Key validation|Step5[Claim Filtering]
+    Step5 --> |Validate JWT claims, exact match or regex|Step6[Header Injection]
+    Step6 --> |Map claims to X-AUTH-* headers|Step7[URL Rewriting]
+    Step7 --> |Strip prefix if configured|Backend([Backend Service])
 ```
 
 ## Testing
