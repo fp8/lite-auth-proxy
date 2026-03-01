@@ -13,7 +13,7 @@ services:
       retries: 5
       start_period: 0s
     environment:
-      GOOGLE_CLOUD_PROJECT: fp8devel
+      GOOGLE_CLOUD_PROJECT: ${GOOGLE_CLOUD_PROJECT}
       PROXY_SERVER_TARGET_URL: ${PROXY_SERVER_TARGET_URL:-http://echo:8080}
       PROXY_SECURITY_RATE_LIMIT_REQUESTS_PER_MIN: 5
       PROXY_SERVER_HEALTH_CHECK_TARGET: ${PROXY_SERVER_TARGET_URL:-http://echo:8080}/healthcheck
