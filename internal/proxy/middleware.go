@@ -92,16 +92,14 @@ func PathFilter(includePaths, excludePaths []string) Middleware {
 	}
 }
 
-// RateLimiter enforces per-IP rate limits for non-authenticated paths.
-// For authenticated paths, rate limiting is applied in the handler after JWT/API-key validation,
-// allowing the key to be based on user identity (JWT sub claim) rather than IP alone.
+// RateLimiter enforces per-IP rate limits for all requests regardless of auth status.
+// This provides DDoS protection by capping requests per IP before any auth processing.
+// For authenticated JWT paths, the handler applies additional per-identity rate limiting
+// using a different key (hashed IP+sub), which does not conflict with the IP-based limit here.
 func RateLimiter(limiter Limiter) Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			requiresAuth := AuthRequiredFromContext(r.Context())
-			// Skip middleware rate limiting for auth-required paths
-			// (will be handled in handler after auth validation)
-			if requiresAuth || limiter == nil {
+			if limiter == nil {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -113,6 +111,27 @@ func RateLimiter(limiter Limiter) Middleware {
 				return
 			}
 
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// BodyLimiter rejects requests whose body exceeds maxBytes.
+// If Content-Length is present and exceeds the limit, the request is rejected immediately.
+// Otherwise, the body is wrapped with http.MaxBytesReader for streaming protection.
+func BodyLimiter(maxBytes int64) Middleware {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if maxBytes > 0 && r.Body != nil && r.Body != http.NoBody {
+				if r.ContentLength > maxBytes {
+					writeJSON(w, http.StatusRequestEntityTooLarge, errorResponse{
+						Error:   "request_too_large",
+						Message: "request body exceeds size limit",
+					})
+					return
+				}
+				r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+			}
 			next.ServeHTTP(w, r)
 		})
 	}

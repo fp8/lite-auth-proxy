@@ -19,7 +19,7 @@ import (
 
 var (
 	// Version is set via ldflags during build
-	Version = "1.0.4"
+	Version = "1.1.0"
 )
 
 const (
@@ -76,6 +76,9 @@ func main() {
 		Addr:              fmt.Sprintf(":%d", cfg.Server.Port),
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 
 	shutdownErrors := make(chan error, 1)

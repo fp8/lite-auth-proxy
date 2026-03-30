@@ -381,13 +381,15 @@ func TestProxyJWTRateLimitingPerUser(t *testing.T) {
 		t.Fatalf("failed to build token for bob: %v", err)
 	}
 
-	// Both requests come from the same IP (RemoteAddr)
-	clientIP := "203.0.113.50:1234"
+	// Alice and Bob use different IPs so that per-identity rate limiting
+	// can be tested independently of the IP-based middleware rate limit.
+	aliceIP := "203.0.113.50:1234"
+	bobIP := "203.0.113.51:1234"
 
 	// Alice makes 2 requests (should succeed - at limit)
 	for i := 0; i < 2; i++ {
 		req := httptest.NewRequest("GET", "http://proxy.local/resource", nil)
-		req.RemoteAddr = clientIP
+		req.RemoteAddr = aliceIP
 		req.Header.Set("Authorization", "Bearer "+tokenAlice)
 		resp := httptest.NewRecorder()
 
@@ -397,9 +399,9 @@ func TestProxyJWTRateLimitingPerUser(t *testing.T) {
 		}
 	}
 
-	// Alice's 3rd request should be rate limited
+	// Alice's 3rd request should be rate limited (per-identity limit)
 	req := httptest.NewRequest("GET", "http://proxy.local/resource", nil)
-	req.RemoteAddr = clientIP
+	req.RemoteAddr = aliceIP
 	req.Header.Set("Authorization", "Bearer "+tokenAlice)
 	resp := httptest.NewRecorder()
 
@@ -411,11 +413,11 @@ func TestProxyJWTRateLimitingPerUser(t *testing.T) {
 		t.Fatal("expected Retry-After header for alice")
 	}
 
-	// Bob (different user, same IP) should have independent rate limit
+	// Bob (different user, different IP) should have independent rate limit
 	// Bob makes 2 requests (should succeed)
 	for i := 0; i < 2; i++ {
 		req := httptest.NewRequest("GET", "http://proxy.local/resource", nil)
-		req.RemoteAddr = clientIP // Same IP as Alice
+		req.RemoteAddr = bobIP
 		req.Header.Set("Authorization", "Bearer "+tokenBob)
 		resp := httptest.NewRecorder()
 
@@ -427,7 +429,7 @@ func TestProxyJWTRateLimitingPerUser(t *testing.T) {
 
 	// Bob's 3rd request should now be rate limited
 	req = httptest.NewRequest("GET", "http://proxy.local/resource", nil)
-	req.RemoteAddr = clientIP
+	req.RemoteAddr = bobIP
 	req.Header.Set("Authorization", "Bearer "+tokenBob)
 	resp = httptest.NewRecorder()
 

@@ -74,9 +74,9 @@ func TestRateLimiterBlocksWhenLimited(t *testing.T) {
 	}
 }
 
-func TestRateLimiterSkipsAuthRequiredPaths(t *testing.T) {
-	// Limiter is called but should not block for auth-required paths
-	// (rate limiting is deferred to handler after auth validation)
+func TestRateLimiterBlocksAuthRequiredPaths(t *testing.T) {
+	// Rate limiter now applies to ALL paths (including auth-required) to prevent
+	// DDoS attacks via invalid auth attempts that would otherwise bypass rate limiting.
 	limiter := &stubLimiter{allowed: false, retryAfter: 42}
 	mw := RateLimiter(limiter)
 
@@ -93,12 +93,12 @@ func TestRateLimiterSkipsAuthRequiredPaths(t *testing.T) {
 	resp := httptest.NewRecorder()
 	h.ServeHTTP(resp, ctxReq)
 
-	// Should pass through to handler (not block at middleware level)
-	if !handlerCalled {
-		t.Fatal("expected handler to be called for auth-required paths")
+	// Should be rate-limited at middleware level (not reach handler)
+	if handlerCalled {
+		t.Fatal("expected handler NOT to be called when rate-limited")
 	}
-	if resp.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", resp.Code)
+	if resp.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429, got %d", resp.Code)
 	}
 }
 

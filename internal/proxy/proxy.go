@@ -44,6 +44,14 @@ func NewHandler(cfg *config.Config, logger *slog.Logger) (http.Handler, error) {
 
 	reverseProxy := newReverseProxy(targetURL, cfg.Server.StripPrefix, false)
 	reverseProxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, proxyErr error) {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(proxyErr, &maxBytesErr) {
+			writeJSON(w, http.StatusRequestEntityTooLarge, errorResponse{
+				Error:   "request_too_large",
+				Message: "request body exceeds size limit",
+			})
+			return
+		}
 		writeJSON(w, http.StatusBadGateway, errorResponse{
 			Error:   "bad_gateway",
 			Message: "upstream unreachable",
@@ -88,6 +96,7 @@ func NewHandler(cfg *config.Config, logger *slog.Logger) (http.Handler, error) {
 
 	pipeline := applyMiddleware(baseHandler,
 		RequestLogger(logger, cfg.Server.IncludePaths, cfg.Server.ExcludePaths),
+		BodyLimiter(cfg.Security.MaxBodyBytes),
 		HeaderSanitizer(cfg.Auth.HeaderPrefix),
 		PathFilter(cfg.Server.IncludePaths, cfg.Server.ExcludePaths),
 		RateLimiter(limiter),
@@ -171,14 +180,8 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Apply rate limiting based on IP for API key auth
-		if h.limiter != nil {
-			allowed, retryAfter := h.limiter.Allow(ip)
-			if !allowed {
-				writeRateLimitResponse(w, retryAfter)
-				return
-			}
-		}
+		// IP-based rate limiting is already enforced by the RateLimiter middleware.
+		// No additional handler-level rate limiting needed for API key auth.
 
 		applyHeaders(r.Header, headers)
 		h.forward(w, r)

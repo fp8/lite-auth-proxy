@@ -38,7 +38,8 @@ type HealthCheck struct {
 
 // SecurityConfig contains security-related settings
 type SecurityConfig struct {
-	RateLimit RateLimitConfig `toml:"rate_limit"`
+	RateLimit    RateLimitConfig `toml:"rate_limit"`
+	MaxBodyBytes int64           `toml:"max_body_bytes"`
 }
 
 // RateLimitConfig contains rate limiting settings
@@ -180,6 +181,13 @@ func applyEnvOverrides(config *Config) error {
 		}
 		config.Security.RateLimit.BanForMin = ban
 	}
+	if val := os.Getenv("PROXY_SECURITY_MAX_BODY_BYTES"); val != "" {
+		maxBody, err := strconv.ParseInt(val, 10, 64)
+		if err != nil {
+			return fmt.Errorf("invalid PROXY_SECURITY_MAX_BODY_BYTES: %w", err)
+		}
+		config.Security.MaxBodyBytes = maxBody
+	}
 
 	// Auth overrides
 	if val := os.Getenv("PROXY_AUTH_HEADER_PREFIX"); val != "" {
@@ -296,6 +304,9 @@ func setDefaults(config *Config) {
 	}
 	if config.Security.RateLimit.BanForMin == 0 {
 		config.Security.RateLimit.BanForMin = 5
+	}
+	if config.Security.MaxBodyBytes == 0 {
+		config.Security.MaxBodyBytes = 1 << 20 // 1 MiB
 	}
 
 	// Auth defaults
