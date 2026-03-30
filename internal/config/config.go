@@ -17,6 +17,21 @@ type Config struct {
 	Server   ServerConfig   `toml:"server"`
 	Security SecurityConfig `toml:"security"`
 	Auth     AuthConfig     `toml:"auth"`
+	Admin    AdminConfig    `toml:"admin"`
+}
+
+// AdminConfig contains settings for the dynamic control-plane API.
+type AdminConfig struct {
+	Enabled bool            `toml:"enabled"`
+	JWT     AdminJWTConfig  `toml:"jwt"`
+}
+
+// AdminJWTConfig holds JWT validation settings for the admin API.
+// The admin API uses GCP service account identity tokens (OIDC JWTs).
+type AdminJWTConfig struct {
+	Issuer        string   `toml:"issuer"`
+	Audience      string   `toml:"audience"`
+	AllowedEmails []string `toml:"allowed_emails"`
 }
 
 // ServerConfig contains HTTP server and proxy settings
@@ -240,6 +255,24 @@ func applyEnvOverrides(config *Config) error {
 		config.Auth.APIKey.Value = substituteEnvVars(val)
 	}
 	config.Auth.APIKey.Payload = applyJWTMapOverrides("PROXY_AUTH_API_KEY_PAYLOAD_", config.Auth.APIKey.Payload)
+
+	// Admin overrides
+	if val := os.Getenv("PROXY_ADMIN_ENABLED"); val != "" {
+		enabled, err := strconv.ParseBool(val)
+		if err != nil {
+			return fmt.Errorf("invalid PROXY_ADMIN_ENABLED: %w", err)
+		}
+		config.Admin.Enabled = enabled
+	}
+	if val := os.Getenv("PROXY_ADMIN_JWT_ISSUER"); val != "" {
+		config.Admin.JWT.Issuer = val
+	}
+	if val := os.Getenv("PROXY_ADMIN_JWT_AUDIENCE"); val != "" {
+		config.Admin.JWT.Audience = val
+	}
+	if val := os.Getenv("PROXY_ADMIN_JWT_ALLOWED_EMAILS"); val != "" {
+		config.Admin.JWT.AllowedEmails = splitCSV(val)
+	}
 
 	return nil
 }

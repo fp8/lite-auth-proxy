@@ -15,6 +15,7 @@ import (
 	"github.com/fp8/lite-auth-proxy/internal/config"
 	"github.com/fp8/lite-auth-proxy/internal/logging"
 	"github.com/fp8/lite-auth-proxy/internal/proxy"
+	"github.com/fp8/lite-auth-proxy/internal/startup"
 )
 
 var (
@@ -66,10 +67,19 @@ func main() {
 	// Log configuration summary
 	logConfigSummary(logger, cfg)
 
-	handler, err := proxy.NewHandler(cfg, logger)
+	handler, deps, err := proxy.NewHandlerWithDeps(cfg, logger)
 	if err != nil {
 		logger.Error("Failed to initialize proxy handler", "error", err)
 		os.Exit(1)
+	}
+
+	// Step 05: pre-load throttle rules from env var before serving traffic.
+	if cfg.Admin.Enabled && deps != nil && deps.RuleStore != nil {
+		loader := startup.NewRuleLoader(deps.RuleStore, deps.VertexBucket, logger)
+		if err := loader.Load(); err != nil {
+			// Non-fatal: proxy starts normally; ShockGuard re-applies rules on next cycle.
+			logger.Warn("startup rule load failed", "error", err)
+		}
 	}
 
 	server := &http.Server{
@@ -90,6 +100,11 @@ func main() {
 
 	if err := <-shutdownErrors; err != nil {
 		logger.Error("Server exited with error", "error", err)
+	}
+
+	// Stop background goroutines (rule store cleanup, RPM reset).
+	if deps != nil && deps.StopFn != nil {
+		deps.StopFn()
 	}
 }
 

@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/fp8/lite-auth-proxy/internal/admin"
 	"github.com/fp8/lite-auth-proxy/internal/auth/apikey"
 	"github.com/fp8/lite-auth-proxy/internal/auth/jwt"
 	"github.com/fp8/lite-auth-proxy/internal/config"
@@ -35,11 +36,29 @@ type handler struct {
 	limiter      *ratelimit.Limiter
 }
 
-// NewHandler builds the proxy handler with middleware and health checks.
+// ProxyDependencies exposes components created inside NewHandlerWithDeps that
+// need to be accessible from main (e.g. for startup rule loading and shutdown).
+type ProxyDependencies struct {
+	RuleStore    *admin.RuleStore
+	VertexBucket *ratelimit.VertexAIBucket
+	StopFn       func()
+}
+
+// NewHandler builds the proxy handler. It is a convenience wrapper around
+// NewHandlerWithDeps that discards the ProxyDependencies return value.
+// All existing call sites (tests etc.) continue to work unchanged.
 func NewHandler(cfg *config.Config, logger *slog.Logger) (http.Handler, error) {
+	h, _, err := NewHandlerWithDeps(cfg, logger)
+	return h, err
+}
+
+// NewHandlerWithDeps builds the proxy handler and returns the internal
+// dependencies (rule store, Vertex AI bucket, stop function) so that callers
+// (main.go) can wire the startup rule loader and trigger clean shutdown.
+func NewHandlerWithDeps(cfg *config.Config, logger *slog.Logger) (http.Handler, *ProxyDependencies, error) {
 	targetURL, err := url.Parse(cfg.Server.TargetURL)
 	if err != nil {
-		return nil, fmt.Errorf("invalid target_url: %w", err)
+		return nil, nil, fmt.Errorf("invalid target_url: %w", err)
 	}
 
 	reverseProxy := newReverseProxy(targetURL, cfg.Server.StripPrefix, false)
@@ -65,7 +84,7 @@ func NewHandler(cfg *config.Config, logger *slog.Logger) (http.Handler, error) {
 	if cfg.Server.HealthCheck.Target != "" {
 		healthTarget, err := url.Parse(cfg.Server.HealthCheck.Target)
 		if err != nil {
-			return nil, fmt.Errorf("invalid health_check.target: %w", err)
+			return nil, nil, fmt.Errorf("invalid health_check.target: %w", err)
 		}
 		healthProxy = newReverseProxy(healthTarget, "", true)
 		healthProxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, proxyErr error) {
@@ -94,11 +113,38 @@ func NewHandler(cfg *config.Config, logger *slog.Logger) (http.Handler, error) {
 		limiter:      limiter,
 	}
 
+	// Admin control-plane (Steps 01, 03, 04).
+	var ruleChecker RuleChecker              // nil when admin disabled
+	var ruleStore *admin.RuleStore           // nil when admin disabled
+	var vertexBucket *ratelimit.VertexAIBucket // nil when admin disabled
+
+	mux := http.NewServeMux()
+
+	if cfg.Admin.Enabled {
+		adminJWTConfig := &config.JWTConfig{
+			Enabled:       true,
+			Issuer:        cfg.Admin.JWT.Issuer,
+			Audience:      cfg.Admin.JWT.Audience,
+			ToleranceSecs: 30,
+			CacheTTLMins:  1440,
+		}
+		adminValidator := jwt.NewValidator(adminJWTConfig)
+		ruleStore = admin.NewRuleStore()
+		ruleChecker = ruleStore
+		vertexBucket = ratelimit.NewVertexAIBucket()
+
+		adminAuth := admin.AdminAuthMiddleware(adminValidator, cfg.Admin.JWT.AllowedEmails)
+		mux.Handle("POST /admin/control", adminAuth(admin.ControlHandler(ruleStore, vertexBucket)))
+		mux.Handle("GET /admin/status", adminAuth(admin.StatusHandler(ruleStore, vertexBucket)))
+	}
+
 	pipeline := applyMiddleware(baseHandler,
 		RequestLogger(logger, cfg.Server.IncludePaths, cfg.Server.ExcludePaths),
 		BodyLimiter(cfg.Security.MaxBodyBytes),
 		HeaderSanitizer(cfg.Auth.HeaderPrefix),
 		PathFilter(cfg.Server.IncludePaths, cfg.Server.ExcludePaths),
+		DynamicRuleCheck(ruleChecker),    // Step 02 — no-op when ruleChecker is nil
+		VertexAIRateLimit(vertexBucket), // Step 03 — no-op when vertexBucket is nil
 		RateLimiter(limiter),
 	)
 
@@ -107,11 +153,22 @@ func NewHandler(cfg *config.Config, logger *slog.Logger) (http.Handler, error) {
 		healthPath = "/healthz"
 	}
 
-	mux := http.NewServeMux()
 	mux.HandleFunc(healthPath, baseHandler.handleHealth)
 	mux.Handle("/", pipeline)
 
-	return mux, nil
+	stopFn := func() {
+		if ruleStore != nil {
+			ruleStore.Stop()
+		}
+	}
+
+	deps := &ProxyDependencies{
+		RuleStore:    ruleStore,
+		VertexBucket: vertexBucket,
+		StopFn:       stopFn,
+	}
+
+	return mux, deps, nil
 }
 
 func applyMiddleware(handler http.Handler, middlewares ...Middleware) http.Handler {

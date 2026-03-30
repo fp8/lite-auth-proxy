@@ -12,13 +12,14 @@ lite-auth-proxy uses TOML format for its configuration files. The default config
 
 ## Configuration Structure
 
-The configuration is organized into four top-level sections:
+The configuration is organized into five top-level sections:
 
 - **[server]** - HTTP server and proxy settings
 - **[security]** - Security features like rate limiting
 - **[auth]** - Authentication configuration (JWT and API-Key)
 - **[auth.jwt]** - JWT-specific settings
 - **[auth.api_key]** - API-Key-specific settings
+- **[admin]** - Dynamic control-plane API (disabled by default)
 
 ## Server Configuration
 
@@ -275,6 +276,15 @@ All configuration values can be overridden using environment variables with the 
 | `PROXY_SECURITY_RATE_LIMIT_REQUESTS_PER_MIN` | `security.rate_limit.requests_per_min` | integer |
 | `PROXY_SECURITY_RATE_LIMIT_BAN_FOR_MIN` | `security.rate_limit.ban_for_min` | integer |
 
+### Admin Overrides
+
+| Environment Variable | Config Field | Type |
+|---------------------|--------------|------|
+| `PROXY_ADMIN_ENABLED` | `admin.enabled` | boolean |
+| `PROXY_ADMIN_JWT_ISSUER` | `admin.jwt.issuer` | string |
+| `PROXY_ADMIN_JWT_AUDIENCE` | `admin.jwt.audience` | string |
+| `PROXY_ADMIN_JWT_ALLOWED_EMAILS` | `admin.jwt.allowed_emails` | comma-separated string |
+
 ### Authentication Overrides
 
 | Environment Variable | Config Field | Type |
@@ -435,6 +445,58 @@ enabled = true
 name = "X-API-KEY"
 value = "{{ENV.API_KEY_SECRET}}"
 ```
+
+---
+
+## Admin Control-Plane
+
+The admin API enables runtime traffic control (throttle, block, allow) without redeploying. It is **disabled by default** and has zero overhead when off.
+
+```toml
+[admin]
+enabled = false   # Set to true to register /admin/* routes
+
+[admin.jwt]
+issuer        = "https://accounts.google.com"
+audience      = "https://your-proxy.run.app"   # The proxy's own Cloud Run URL
+allowed_emails = [
+  "sg-killswitch@your-project.iam.gserviceaccount.com",
+]
+```
+
+| Field | Type | Default | ENV Variable | Description |
+|-------|------|---------|---|-------------|
+| `admin.enabled` | boolean | `false` | `PROXY_ADMIN_ENABLED` | Register `/admin/control` and `/admin/status` routes |
+| `admin.jwt.issuer` | string | `"https://accounts.google.com"` | `PROXY_ADMIN_JWT_ISSUER` | Expected OIDC issuer for admin identity tokens |
+| `admin.jwt.audience` | string | — | `PROXY_ADMIN_JWT_AUDIENCE` | Expected audience — set to the proxy's own Cloud Run URL |
+| `admin.jwt.allowed_emails` | array[string] | `[]` | `PROXY_ADMIN_JWT_ALLOWED_EMAILS` | Comma-separated list of service account emails allowed to call the admin API |
+
+**Authentication model:** Admin callers obtain a GCP service account identity token (ID token) with the proxy's Cloud Run URL as the audience. The proxy validates this token against Google's OIDC JWKS endpoint (same infrastructure as the main auth pipeline) and checks the `email` claim against `allowed_emails`. No additional secrets are needed.
+
+### Startup Rule Persistence
+
+When `admin.enabled = true`, the proxy reads `PROXY_THROTTLE_RULES` at startup and pre-populates the rule store before serving any traffic. This prevents a gap in throttling when Cloud Run scales up a new instance during an active billing spike.
+
+```bash
+# ShockGuard or your automation sets this on the Cloud Run service:
+PROXY_THROTTLE_RULES='[
+  {
+    "ruleId":          "sg-throttle-vertex",
+    "targetHost":      "-aiplatform.googleapis.com",
+    "action":          "throttle",
+    "maxRPM":          200,
+    "pathPattern":     "/v1/projects/",
+    "rateByKey":       true,
+    "expiresAt":       "2026-03-30T15:10:00Z"
+  }
+]'
+```
+
+- `expiresAt` is an absolute RFC 3339 timestamp. Rules past their expiry are silently skipped on load.
+- An empty value or missing variable results in no rules loaded (not an error).
+- A malformed JSON value logs a warning but does **not** prevent the proxy from starting.
+
+---
 
 ## Configuration Validation
 

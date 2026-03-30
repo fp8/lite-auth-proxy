@@ -87,6 +87,51 @@ export PROXY_AUTH_API_KEY_NAME=X-API-KEY
 export PROXY_AUTH_API_KEY_VALUE=my-secret-key-123
 ```
 
+### Admin Control-Plane
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `PROXY_ADMIN_ENABLED` | boolean | `false` | Register `/admin/control` and `/admin/status` routes |
+| `PROXY_ADMIN_JWT_ISSUER` | string | `"https://accounts.google.com"` | OIDC issuer for admin identity tokens |
+| `PROXY_ADMIN_JWT_AUDIENCE` | string | - | Expected audience — set to the proxy's own Cloud Run URL |
+| `PROXY_ADMIN_JWT_ALLOWED_EMAILS` | string (CSV) | - | Comma-separated service account emails allowed to call the admin API |
+| `PROXY_THROTTLE_RULES` | JSON string | - | Persisted throttle rules loaded on startup (see below) |
+
+**Example:**
+```bash
+export PROXY_ADMIN_ENABLED=true
+export PROXY_ADMIN_JWT_AUDIENCE=https://my-proxy-abc123.run.app
+export PROXY_ADMIN_JWT_ALLOWED_EMAILS=sg-killswitch@my-project.iam.gserviceaccount.com
+```
+
+#### PROXY_THROTTLE_RULES
+
+A JSON array of rule objects pre-loaded into the rule store before the proxy begins serving traffic. Used to survive Cloud Run instance restarts without waiting for the next ShockGuard cycle.
+
+```bash
+export PROXY_THROTTLE_RULES='[
+  {
+    "ruleId":          "sg-throttle-vertex",
+    "targetHost":      "-aiplatform.googleapis.com",
+    "action":          "throttle",
+    "maxRPM":          200,
+    "pathPattern":     "/v1/projects/",
+    "rateByKey":       true,
+    "expiresAt":       "2026-03-30T15:10:00Z"
+  }
+]'
+```
+
+| Rule Field | Type | Required | Description |
+|------------|------|----------|-------------|
+| `ruleId` | string | yes | Unique identifier |
+| `targetHost` | string | yes | Exact `Host` header value to match |
+| `action` | string | yes | `throttle`, `block`, or `allow` |
+| `maxRPM` | integer | when throttle | Max requests per minute |
+| `pathPattern` | string | no | Path prefix to restrict the rule |
+| `rateByKey` | boolean | no | Per-caller-identity mode (default `false` = global) |
+| `expiresAt` | string | yes | Absolute RFC 3339 expiry; past values are silently skipped |
+
 ## Configuration File Substitution Variables
 
 These variables can be referenced in TOML configuration files using `{{ENV.VARIABLE_NAME}}` syntax. They are substituted at configuration load time.

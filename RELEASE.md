@@ -2,7 +2,11 @@
 
 # 1.1.0 [TBD]
 
-* Added optional `/admin` endpoint to configure proxy on the fly
+* Added optional `/admin` control-plane API (`POST /admin/control`, `GET /admin/status`) to set, remove, and inspect dynamic rate-limit rules at runtime without redeploying
+* Dynamic rules are evaluated before per-IP rate limiting and support `throttle`, `block`, and `allow` actions with automatic expiry
+* Added Vertex AI endpoint detection with a dedicated global and per-caller-identity rate-limit bucket, independently throttling AI traffic regardless of source IP
+* Added `PROXY_THROTTLE_RULES` env var for persisting active rules across Cloud Run instance restarts
+* Added `[admin]` config section with GCP service account identity token authentication (`admin.jwt.issuer`, `admin.jwt.audience`, `admin.jwt.allowed_emails`); disabled by default
 
 ## DDoS Hardening
 

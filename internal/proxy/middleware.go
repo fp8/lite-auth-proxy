@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/fp8/lite-auth-proxy/internal/ratelimit"
 )
 
 type contextKey string
@@ -111,6 +113,27 @@ func RateLimiter(limiter Limiter) Middleware {
 				return
 			}
 
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// VertexAIRateLimit enforces the Vertex AI rate-limit bucket.
+// In per-key mode the limit applies per caller identity; in global mode it applies
+// to all Vertex AI traffic in aggregate.
+// When bucket is nil (admin disabled) the middleware is a no-op passthrough.
+func VertexAIRateLimit(bucket *ratelimit.VertexAIBucket) Middleware {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if bucket == nil || !ratelimit.IsVertexAIRequest(r) {
+				next.ServeHTTP(w, r)
+				return
+			}
+			identity := ratelimit.ExtractVertexAICallerIdentity(r)
+			if !bucket.ShouldAllow(identity) {
+				writeRateLimitResponse(w, 60)
+				return
+			}
 			next.ServeHTTP(w, r)
 		})
 	}

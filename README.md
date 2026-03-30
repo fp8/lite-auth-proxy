@@ -15,6 +15,9 @@ lite-auth-proxy is a lightweight authentication proxy that sits in front of your
 - 🚀 **High Performance**: Fast startup (<50ms), minimal memory (<32MB)
 - 🛡️ **Zero-Trust Security**: Header sanitization, claim-based access control
 - 🎯 **Rate Limiting**: Per-IP rate limiting with automatic ban mechanism
+- 🎛️ **Dynamic Control Plane**: Runtime throttle/block/allow rules via `/admin/control` API — no restart needed
+- 🤖 **Vertex AI Rate Limiting**: Dedicated global or per-caller bucket for AI traffic, independent of per-IP limits
+- 💾 **Rule Persistence**: Active throttle rules survive Cloud Run instance restarts via `PROXY_THROTTLE_RULES`
 - 📊 **Structured Logging**: JSON/text logging with `slog`, Google Cloud Logging compatible
 - 🔄 **URL Rewriting**: Strip path prefixes before forwarding
 - 🏥 **Health Checks**: Configurable health endpoint with proxy-to-downstream support
@@ -119,6 +122,56 @@ export PROXY_SECURITY_RATE_LIMIT_ENABLED=true
 ```
 
 For a complete configuration reference, see the [Configuration Guide](docs/CONFIGURATION.md).
+
+## Admin Control API
+
+When `admin.enabled = true`, two additional endpoints are available for runtime traffic control without redeploying.
+
+Authentication uses **GCP service account identity tokens** (OIDC JWTs). The calling service account obtains an ID token from the GCP metadata server and passes it as `Authorization: Bearer <token>`.
+
+### POST /admin/control
+
+Manage dynamic rate-limit rules:
+
+```bash
+# Throttle a backend to 50 RPM for 10 minutes
+curl -X POST https://your-proxy.run.app/admin/control \
+  -H "Authorization: Bearer $(gcloud auth print-identity-token)" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "command": "set-rule",
+    "rule": {
+      "ruleId": "throttle-my-api",
+      "targetHost": "my-api.run.app",
+      "action": "throttle",
+      "maxRPM": 50,
+      "durationSeconds": 600
+    }
+  }'
+
+# Remove a specific rule
+curl -X POST .../admin/control \
+  -d '{"command":"remove-rule","ruleId":"throttle-my-api"}'
+
+# Clear all rules
+curl -X POST .../admin/control \
+  -d '{"command":"remove-all"}'
+```
+
+Supported actions: `throttle` (cap RPM), `block` (drop all), `allow` (bypass per-IP limit).
+
+For Vertex AI paths, add `"rateByKey": true` to apply the limit per caller identity (`x-goog-api-key`, JWT `sub`, or IP) instead of globally.
+
+### GET /admin/status
+
+Inspect all active rules and the Vertex AI bucket state:
+
+```bash
+curl https://your-proxy.run.app/admin/status \
+  -H "Authorization: Bearer $(gcloud auth print-identity-token)"
+```
+
+See [Configuration Guide](docs/CONFIGURATION.md#admin-control-plane) and [API Documentation](docs/API.md#admin-endpoints) for full details.
 
 ## Authentication
 
@@ -251,13 +304,17 @@ For detailed deployment instructions, see the [Deployment Guide](docs/Deployment
 flowchart TD
     Start([HTTP Request]) --> Step1
     Step1[Header Sanitization] --> |Strip incoming X-AUTH-* headers|Step2[Path Filtering]
-    Step2 --> |Check include/exclude patterns|Step3[Rate Limiting]
-    Step3 --> |Per-IP with automatic banning|Step4[Authentication]
-    Step4 --> |JWT token or API-Key validation|Step5[Claim Filtering]
-    Step5 --> |Validate JWT claims, exact match or regex|Step6[Header Injection]
-    Step6 --> |Map claims to X-AUTH-* headers|Step7[URL Rewriting]
-    Step7 --> |Strip prefix if configured|Backend([Backend Service])
+    Step2 --> |Check include/exclude patterns|Step3[Dynamic Rule Check]
+    Step3 --> |Admin throttle/block/allow rules|Step4[Vertex AI Rate Limit]
+    Step4 --> |Per-caller Vertex AI bucket|Step5[Per-IP Rate Limiting]
+    Step5 --> |IP ban mechanism|Step6[Authentication]
+    Step6 --> |JWT token or API-Key validation|Step7[Claim Filtering]
+    Step7 --> |Validate JWT claims, exact match or regex|Step8[Header Injection]
+    Step8 --> |Map claims to X-AUTH-* headers|Step9[URL Rewriting]
+    Step9 --> |Strip prefix if configured|Backend([Backend Service])
 ```
+
+> **Admin API** (`/admin/control`, `/admin/status`) sits on the same mux but is handled before the pipeline. It is only registered when `admin.enabled = true`.
 
 ## Testing
 
@@ -326,7 +383,6 @@ for commercial licensing inquiries.
 - [ ] mTLS support for upstream connections
 - [ ] Plugin system for custom authentication methods
 - [ ] Prometheus metrics export
-- [ ] Dynamic configuration reload without restart
 - [ ] WebSocket proxying support
 - [ ] gRPC proxying support
 
