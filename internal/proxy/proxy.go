@@ -1,8 +1,6 @@
 package proxy
 
 import (
-	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -33,14 +31,13 @@ type handler struct {
 	proxy        *httputil.ReverseProxy
 	healthProxy  *httputil.ReverseProxy
 	jwtValidator *jwt.Validator
-	limiter      *ratelimit.Limiter
 }
 
 // ProxyDependencies exposes components created inside NewHandlerWithDeps that
 // need to be accessible from main (e.g. for startup rule loading and shutdown).
 type ProxyDependencies struct {
 	RuleStore    *admin.RuleStore
-	VertexBucket *ratelimit.VertexAIBucket
+	RateLimiters map[string]*ratelimit.RateLimiter
 	StopFn       func()
 }
 
@@ -53,7 +50,7 @@ func NewHandler(cfg *config.Config, logger *slog.Logger) (http.Handler, error) {
 }
 
 // NewHandlerWithDeps builds the proxy handler and returns the internal
-// dependencies (rule store, Vertex AI bucket, stop function) so that callers
+// dependencies (rule store, rate limiters, stop function) so that callers
 // (main.go) can wire the startup rule loader and trigger clean shutdown.
 func NewHandlerWithDeps(cfg *config.Config, logger *slog.Logger) (http.Handler, *ProxyDependencies, error) {
 	targetURL, err := url.Parse(cfg.Server.TargetURL)
@@ -98,11 +95,47 @@ func NewHandlerWithDeps(cfg *config.Config, logger *slog.Logger) (http.Handler, 
 		}
 	}
 
-	limiter := ratelimit.NewLimiter(
-		cfg.Security.RateLimit.Enabled,
-		cfg.Security.RateLimit.RequestsPerMin,
-		time.Duration(cfg.Security.RateLimit.BanForMin)*time.Minute,
-	)
+	// Create rate limiters — one per traffic type.
+	ipLimiter := ratelimit.NewRateLimiter(ratelimit.RateLimiterConfig{
+		Name:           "ip",
+		Enabled:        cfg.Security.RateLimit.Enabled,
+		RequestsPerMin: cfg.Security.RateLimit.RequestsPerMin,
+		BanDuration:    time.Duration(cfg.Security.RateLimit.BanForMin) * time.Minute,
+		ThrottleDelay:  time.Duration(cfg.Security.RateLimit.ThrottleDelayMs) * time.Millisecond,
+		MaxDelaySlots:  cfg.Security.RateLimit.MaxDelaySlots,
+	})
+
+	apikeyLimiter := ratelimit.NewRateLimiter(ratelimit.RateLimiterConfig{
+		Name:           "apikey",
+		Enabled:        cfg.Security.ApiKeyRateLimit.Enabled,
+		RequestsPerMin: cfg.Security.ApiKeyRateLimit.RequestsPerMin,
+		BanDuration:    time.Duration(cfg.Security.ApiKeyRateLimit.BanForMin) * time.Minute,
+		ThrottleDelay:  time.Duration(cfg.Security.ApiKeyRateLimit.ThrottleDelayMs) * time.Millisecond,
+		MaxDelaySlots:  cfg.Security.ApiKeyRateLimit.MaxDelaySlots,
+	})
+
+	jwtLimiter := ratelimit.NewRateLimiter(ratelimit.RateLimiterConfig{
+		Name:           "jwt",
+		Enabled:        cfg.Security.JwtRateLimit.Enabled,
+		RequestsPerMin: cfg.Security.JwtRateLimit.RequestsPerMin,
+		BanDuration:    time.Duration(cfg.Security.JwtRateLimit.BanForMin) * time.Minute,
+		ThrottleDelay:  time.Duration(cfg.Security.JwtRateLimit.ThrottleDelayMs) * time.Millisecond,
+		MaxDelaySlots:  cfg.Security.JwtRateLimit.MaxDelaySlots,
+	})
+
+	// Build request matcher for API key rate limiting.
+	matchRules := make([]ratelimit.RequestMatchRule, len(cfg.Security.ApiKeyRateLimit.Match))
+	for i, m := range cfg.Security.ApiKeyRateLimit.Match {
+		matchRules[i] = ratelimit.RequestMatchRule{
+			Host:   m.Host,
+			Path:   m.Path,
+			Header: m.Header,
+		}
+	}
+	apiKeyMatcher, err := ratelimit.NewRequestMatcher(matchRules)
+	if err != nil {
+		return nil, nil, fmt.Errorf("invalid apikey_rate_limit.match: %w", err)
+	}
 
 	baseHandler := &handler{
 		cfg:          cfg,
@@ -110,13 +143,17 @@ func NewHandlerWithDeps(cfg *config.Config, logger *slog.Logger) (http.Handler, 
 		proxy:        reverseProxy,
 		healthProxy:  healthProxy,
 		jwtValidator: jwt.NewValidator(&cfg.Auth.JWT),
-		limiter:      limiter,
 	}
 
-	// Admin control-plane (Steps 01, 03, 04).
-	var ruleChecker RuleChecker              // nil when admin disabled
-	var ruleStore *admin.RuleStore           // nil when admin disabled
-	var vertexBucket *ratelimit.VertexAIBucket // nil when admin disabled
+	// Admin control-plane.
+	var ruleChecker RuleChecker    // nil when admin disabled
+	var ruleStore *admin.RuleStore // nil when admin disabled
+
+	rateLimiters := map[string]*ratelimit.RateLimiter{
+		"ip":     ipLimiter,
+		"apikey": apikeyLimiter,
+		"jwt":    jwtLimiter,
+	}
 
 	mux := http.NewServeMux()
 
@@ -124,11 +161,10 @@ func NewHandlerWithDeps(cfg *config.Config, logger *slog.Logger) (http.Handler, 
 		adminValidator := jwt.NewValidator(&cfg.Admin.JWT)
 		ruleStore = admin.NewRuleStore()
 		ruleChecker = ruleStore
-		vertexBucket = ratelimit.NewVertexAIBucket()
 
 		adminAuth := admin.AdminAuthMiddleware(adminValidator, cfg.Admin.JWT.AllowedEmails, cfg.Admin.JWT.Filters)
-		mux.Handle("POST /admin/control", adminAuth(admin.ControlHandler(ruleStore, vertexBucket)))
-		mux.Handle("GET /admin/status", adminAuth(admin.StatusHandler(ruleStore, vertexBucket)))
+		mux.Handle("POST /admin/control", adminAuth(admin.ControlHandler(ruleStore, rateLimiters)))
+		mux.Handle("GET /admin/status", adminAuth(admin.StatusHandler(ruleStore, rateLimiters)))
 	}
 
 	pipeline := applyMiddleware(baseHandler,
@@ -136,9 +172,10 @@ func NewHandlerWithDeps(cfg *config.Config, logger *slog.Logger) (http.Handler, 
 		BodyLimiter(cfg.Security.MaxBodyBytes),
 		HeaderSanitizer(cfg.Auth.HeaderPrefix),
 		PathFilter(cfg.Server.IncludePaths, cfg.Server.ExcludePaths),
-		DynamicRuleCheck(ruleChecker),    // Step 02 — no-op when ruleChecker is nil
-		VertexAIRateLimit(vertexBucket), // Step 03 — no-op when vertexBucket is nil
-		RateLimiter(limiter),
+		DynamicRuleCheck(ruleChecker),
+		ApiKeyRateLimit(apikeyLimiter, apiKeyMatcher, cfg.Security.ApiKeyRateLimit.KeyHeader, cfg.Security.ApiKeyRateLimit.IncludeIP),
+		JwtRateLimit(jwtLimiter, cfg.Security.JwtRateLimit.IncludeIP),
+		IpRateLimit(ipLimiter),
 	)
 
 	healthPath := cfg.Server.HealthCheck.Path
@@ -157,7 +194,7 @@ func NewHandlerWithDeps(cfg *config.Config, logger *slog.Logger) (http.Handler, 
 
 	deps := &ProxyDependencies{
 		RuleStore:    ruleStore,
-		VertexBucket: vertexBucket,
+		RateLimiters: rateLimiters,
 		StopFn:       stopFn,
 	}
 
@@ -214,16 +251,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		// Apply rate limiting based on JWT sub claim
-		sub, _ := claims["sub"].(string)
-		rateLimitKey := hashKey(ip, sub)
-		if h.limiter != nil {
-			allowed, retryAfter := h.limiter.Allow(rateLimitKey)
-			if !allowed {
-				writeRateLimitResponse(w, retryAfter)
-				return
-			}
-		}
+		_ = ip // IP used by middleware-level rate limiting; no handler-level rate limiting needed.
 
 		mappedHeaders := jwt.MapClaims(claims, h.cfg.Auth.JWT.Mappings, h.cfg.Auth.HeaderPrefix)
 		applyHeaders(r.Header, mappedHeaders)
@@ -247,9 +275,6 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-
-		// IP-based rate limiting is already enforced by the RateLimiter middleware.
-		// No additional handler-level rate limiting needed for API key auth.
 
 		applyHeaders(r.Header, headers)
 		h.forward(w, r)
@@ -394,16 +419,4 @@ func isEmailAllowed(claims jwt.Claims, allowedEmails []string) bool {
 		}
 	}
 	return false
-}
-
-// hashKey hashes an IP-sub pair for memory-efficient rate limit tracking.
-// Uses SHA256 to create a fixed-size identifier from potentially long sub claim values.
-// Returns base64url encoding (43 chars) instead of hex (64 chars) for better memory efficiency.
-func hashKey(ip, sub string) string {
-	if sub == "" {
-		return ip
-	}
-
-	h := sha256.Sum256([]byte(ip + ":" + sub))
-	return base64.RawURLEncoding.EncodeToString(h[:])
 }

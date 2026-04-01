@@ -45,15 +45,49 @@ type HealthCheck struct {
 
 // SecurityConfig contains security-related settings
 type SecurityConfig struct {
-	RateLimit    RateLimitConfig `toml:"rate_limit"`
-	MaxBodyBytes int64           `toml:"max_body_bytes"`
+	RateLimit       RateLimitConfig       `toml:"rate_limit"`
+	ApiKeyRateLimit ApiKeyRateLimitConfig `toml:"apikey_rate_limit"`
+	JwtRateLimit    JwtRateLimitConfig    `toml:"jwt_rate_limit"`
+	MaxBodyBytes    int64                 `toml:"max_body_bytes"`
 }
 
-// RateLimitConfig contains rate limiting settings
+// RateLimitConfig contains IP-based rate limiting settings
 type RateLimitConfig struct {
-	Enabled        bool `toml:"enabled"`
-	RequestsPerMin int  `toml:"requests_per_min"`
-	BanForMin      int  `toml:"ban_for_min"`
+	Enabled         bool `toml:"enabled"`
+	RequestsPerMin  int  `toml:"requests_per_min"`
+	BanForMin       int  `toml:"ban_for_min"`
+	ThrottleDelayMs int  `toml:"throttle_delay_ms"`
+	MaxDelaySlots   int  `toml:"max_delay_slots"`
+}
+
+// MatchRule defines a request matching rule for rate-limit targeting.
+// All non-empty fields within a rule must match (AND logic).
+type MatchRule struct {
+	Host   string `toml:"host"`   // exact string or /regex/
+	Path   string `toml:"path"`   // exact string or /regex/
+	Header string `toml:"header"` // header name that must be present
+}
+
+// ApiKeyRateLimitConfig contains API-key-based rate limiting settings.
+type ApiKeyRateLimitConfig struct {
+	Enabled         bool        `toml:"enabled"`
+	RequestsPerMin  int         `toml:"requests_per_min"`
+	BanForMin       int         `toml:"ban_for_min"`
+	IncludeIP       bool        `toml:"include_ip"`
+	KeyHeader       string      `toml:"key_header"`
+	Match           []MatchRule `toml:"match"`
+	ThrottleDelayMs int         `toml:"throttle_delay_ms"`
+	MaxDelaySlots   int         `toml:"max_delay_slots"`
+}
+
+// JwtRateLimitConfig contains JWT-based rate limiting settings.
+type JwtRateLimitConfig struct {
+	Enabled         bool `toml:"enabled"`
+	RequestsPerMin  int  `toml:"requests_per_min"`
+	BanForMin       int  `toml:"ban_for_min"`
+	IncludeIP       bool `toml:"include_ip"`
+	ThrottleDelayMs int  `toml:"throttle_delay_ms"`
+	MaxDelaySlots   int  `toml:"max_delay_slots"`
 }
 
 // AuthConfig contains authentication settings
@@ -191,6 +225,112 @@ func applyEnvOverrides(config *Config) error {
 		}
 		config.Security.RateLimit.BanForMin = ban
 	}
+	if val := os.Getenv("PROXY_SECURITY_RATE_LIMIT_THROTTLE_DELAY_MS"); val != "" {
+		delay, err := strconv.Atoi(val)
+		if err != nil {
+			return fmt.Errorf("invalid PROXY_SECURITY_RATE_LIMIT_THROTTLE_DELAY_MS: %w", err)
+		}
+		config.Security.RateLimit.ThrottleDelayMs = delay
+	}
+	if val := os.Getenv("PROXY_SECURITY_RATE_LIMIT_MAX_DELAY_SLOTS"); val != "" {
+		slots, err := strconv.Atoi(val)
+		if err != nil {
+			return fmt.Errorf("invalid PROXY_SECURITY_RATE_LIMIT_MAX_DELAY_SLOTS: %w", err)
+		}
+		config.Security.RateLimit.MaxDelaySlots = slots
+	}
+
+	// API key rate limit overrides
+	if val := os.Getenv("PROXY_SECURITY_APIKEY_RATE_LIMIT_ENABLED"); val != "" {
+		enabled, err := strconv.ParseBool(val)
+		if err != nil {
+			return fmt.Errorf("invalid PROXY_SECURITY_APIKEY_RATE_LIMIT_ENABLED: %w", err)
+		}
+		config.Security.ApiKeyRateLimit.Enabled = enabled
+	}
+	if val := os.Getenv("PROXY_SECURITY_APIKEY_RATE_LIMIT_REQUESTS_PER_MIN"); val != "" {
+		rpm, err := strconv.Atoi(val)
+		if err != nil {
+			return fmt.Errorf("invalid PROXY_SECURITY_APIKEY_RATE_LIMIT_REQUESTS_PER_MIN: %w", err)
+		}
+		config.Security.ApiKeyRateLimit.RequestsPerMin = rpm
+	}
+	if val := os.Getenv("PROXY_SECURITY_APIKEY_RATE_LIMIT_BAN_FOR_MIN"); val != "" {
+		ban, err := strconv.Atoi(val)
+		if err != nil {
+			return fmt.Errorf("invalid PROXY_SECURITY_APIKEY_RATE_LIMIT_BAN_FOR_MIN: %w", err)
+		}
+		config.Security.ApiKeyRateLimit.BanForMin = ban
+	}
+	if val := os.Getenv("PROXY_SECURITY_APIKEY_RATE_LIMIT_INCLUDE_IP"); val != "" {
+		include, err := strconv.ParseBool(val)
+		if err != nil {
+			return fmt.Errorf("invalid PROXY_SECURITY_APIKEY_RATE_LIMIT_INCLUDE_IP: %w", err)
+		}
+		config.Security.ApiKeyRateLimit.IncludeIP = include
+	}
+	if val := os.Getenv("PROXY_SECURITY_APIKEY_RATE_LIMIT_KEY_HEADER"); val != "" {
+		config.Security.ApiKeyRateLimit.KeyHeader = val
+	}
+	if val := os.Getenv("PROXY_SECURITY_APIKEY_RATE_LIMIT_THROTTLE_DELAY_MS"); val != "" {
+		delay, err := strconv.Atoi(val)
+		if err != nil {
+			return fmt.Errorf("invalid PROXY_SECURITY_APIKEY_RATE_LIMIT_THROTTLE_DELAY_MS: %w", err)
+		}
+		config.Security.ApiKeyRateLimit.ThrottleDelayMs = delay
+	}
+	if val := os.Getenv("PROXY_SECURITY_APIKEY_RATE_LIMIT_MAX_DELAY_SLOTS"); val != "" {
+		slots, err := strconv.Atoi(val)
+		if err != nil {
+			return fmt.Errorf("invalid PROXY_SECURITY_APIKEY_RATE_LIMIT_MAX_DELAY_SLOTS: %w", err)
+		}
+		config.Security.ApiKeyRateLimit.MaxDelaySlots = slots
+	}
+
+	// JWT rate limit overrides
+	if val := os.Getenv("PROXY_SECURITY_JWT_RATE_LIMIT_ENABLED"); val != "" {
+		enabled, err := strconv.ParseBool(val)
+		if err != nil {
+			return fmt.Errorf("invalid PROXY_SECURITY_JWT_RATE_LIMIT_ENABLED: %w", err)
+		}
+		config.Security.JwtRateLimit.Enabled = enabled
+	}
+	if val := os.Getenv("PROXY_SECURITY_JWT_RATE_LIMIT_REQUESTS_PER_MIN"); val != "" {
+		rpm, err := strconv.Atoi(val)
+		if err != nil {
+			return fmt.Errorf("invalid PROXY_SECURITY_JWT_RATE_LIMIT_REQUESTS_PER_MIN: %w", err)
+		}
+		config.Security.JwtRateLimit.RequestsPerMin = rpm
+	}
+	if val := os.Getenv("PROXY_SECURITY_JWT_RATE_LIMIT_BAN_FOR_MIN"); val != "" {
+		ban, err := strconv.Atoi(val)
+		if err != nil {
+			return fmt.Errorf("invalid PROXY_SECURITY_JWT_RATE_LIMIT_BAN_FOR_MIN: %w", err)
+		}
+		config.Security.JwtRateLimit.BanForMin = ban
+	}
+	if val := os.Getenv("PROXY_SECURITY_JWT_RATE_LIMIT_INCLUDE_IP"); val != "" {
+		include, err := strconv.ParseBool(val)
+		if err != nil {
+			return fmt.Errorf("invalid PROXY_SECURITY_JWT_RATE_LIMIT_INCLUDE_IP: %w", err)
+		}
+		config.Security.JwtRateLimit.IncludeIP = include
+	}
+	if val := os.Getenv("PROXY_SECURITY_JWT_RATE_LIMIT_THROTTLE_DELAY_MS"); val != "" {
+		delay, err := strconv.Atoi(val)
+		if err != nil {
+			return fmt.Errorf("invalid PROXY_SECURITY_JWT_RATE_LIMIT_THROTTLE_DELAY_MS: %w", err)
+		}
+		config.Security.JwtRateLimit.ThrottleDelayMs = delay
+	}
+	if val := os.Getenv("PROXY_SECURITY_JWT_RATE_LIMIT_MAX_DELAY_SLOTS"); val != "" {
+		slots, err := strconv.Atoi(val)
+		if err != nil {
+			return fmt.Errorf("invalid PROXY_SECURITY_JWT_RATE_LIMIT_MAX_DELAY_SLOTS: %w", err)
+		}
+		config.Security.JwtRateLimit.MaxDelaySlots = slots
+	}
+
 	if val := os.Getenv("PROXY_SECURITY_MAX_BODY_BYTES"); val != "" {
 		maxBody, err := strconv.ParseInt(val, 10, 64)
 		if err != nil {
@@ -326,13 +466,43 @@ func setDefaults(config *Config) {
 		config.Server.IncludePaths = []string{"/*"}
 	}
 
-	// Security defaults
+	// Security defaults — IP rate limit
 	if config.Security.RateLimit.RequestsPerMin == 0 {
 		config.Security.RateLimit.RequestsPerMin = 60
 	}
 	if config.Security.RateLimit.BanForMin == 0 {
 		config.Security.RateLimit.BanForMin = 5
 	}
+	// ThrottleDelayMs defaults to 0 (off)
+	if config.Security.RateLimit.MaxDelaySlots == 0 {
+		config.Security.RateLimit.MaxDelaySlots = 100
+	}
+
+	// Security defaults — API key rate limit
+	if config.Security.ApiKeyRateLimit.RequestsPerMin == 0 {
+		config.Security.ApiKeyRateLimit.RequestsPerMin = 60
+	}
+	if config.Security.ApiKeyRateLimit.BanForMin == 0 {
+		config.Security.ApiKeyRateLimit.BanForMin = 5
+	}
+	if config.Security.ApiKeyRateLimit.KeyHeader == "" {
+		config.Security.ApiKeyRateLimit.KeyHeader = "x-goog-api-key"
+	}
+	if config.Security.ApiKeyRateLimit.MaxDelaySlots == 0 {
+		config.Security.ApiKeyRateLimit.MaxDelaySlots = 100
+	}
+
+	// Security defaults — JWT rate limit
+	if config.Security.JwtRateLimit.RequestsPerMin == 0 {
+		config.Security.JwtRateLimit.RequestsPerMin = 60
+	}
+	if config.Security.JwtRateLimit.BanForMin == 0 {
+		config.Security.JwtRateLimit.BanForMin = 5
+	}
+	if config.Security.JwtRateLimit.MaxDelaySlots == 0 {
+		config.Security.JwtRateLimit.MaxDelaySlots = 100
+	}
+
 	if config.Security.MaxBodyBytes == 0 {
 		config.Security.MaxBodyBytes = 1 << 20 // 1 MiB
 	}

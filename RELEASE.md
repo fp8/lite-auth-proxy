@@ -2,6 +2,18 @@
 
 # 1.1.1 [2026-04-01]
 
+## Unified Rate Limiting
+
+* **Single `RateLimiter` core** — all rate limiting logic (sliding window, bans, throttle delay) consolidated into one reusable `RateLimiter` struct, replacing the separate `Limiter`, `VertexAIBucket`, and `VertexAIKeyBucket` implementations.
+* **Three rate-limit middlewares**: `IpRateLimit` (per-IP), `ApiKeyRateLimit` (per-API-key with configurable request matching), `JwtRateLimit` (per-JWT `sub` claim). Each has independent configuration (`requests_per_min`, `ban_for_min`, `throttle_delay_ms`).
+* **Generic request matching** for API key rate limiting — replaces hardcoded Vertex AI detection. Configure `[[security.apikey_rate_limit.match]]` rules with `host`, `path` (exact or `/regex/`), and `header` fields. Multiple rules use OR logic; fields within a rule use AND logic.
+* **Per-JWT rate limiting moved to middleware** — no longer embedded in the handler. Runs before JWT validation for early rejection.
+* **DDoS-safe throttle delay** — optional per-limiter delay before returning 429 (bounded by `max_delay_slots` semaphore to prevent goroutine exhaustion under DDoS). Disabled by default (`throttle_delay_ms = 0`).
+* **Admin API: `limiter` field** — `set-rule` command now accepts a `"limiter"` field (`"ip"`, `"apikey"`, `"jwt"`) to target a specific rate limiter at runtime.
+* **Breaking:** admin status response `vertexAI` field replaced with `rateLimiters` map containing status for all three rate limiters.
+* **New config sections:** `[security.apikey_rate_limit]`, `[security.jwt_rate_limit]` with independent settings. Existing `[security.rate_limit]` continues to control the IP rate limiter (backward compatible).
+* **New env overrides:** `PROXY_SECURITY_APIKEY_RATE_LIMIT_*`, `PROXY_SECURITY_JWT_RATE_LIMIT_*`, `PROXY_SECURITY_RATE_LIMIT_THROTTLE_DELAY_MS`, `PROXY_SECURITY_RATE_LIMIT_MAX_DELAY_SLOTS`.
+
 ## Unified JWT Config
 
 * **Merged `AdminJWTConfig` into `JWTConfig`** — the `[admin.jwt]` section now uses the same configuration structure as `[auth.jwt]`, eliminating the separate `AdminJWTConfig` type. The `admin.jwt` block accepts all standard JWT fields (`issuer`, `audience`, `tolerance_secs`, `cache_ttl_mins`, `filters`, `mappings`, `allowed_emails`).

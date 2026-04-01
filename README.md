@@ -15,9 +15,9 @@ lite-auth-proxy is a lightweight authentication proxy that sits in front of your
 - 🔓 **Rate-Limit-Only Mode**: Disable both auth methods to forward all requests without credential checks — rate limiting still applies
 - 🚀 **High Performance**: Fast startup (<50ms), minimal memory (<32MB)
 - 🛡️ **Zero-Trust Security**: Header sanitization, claim-based access control
-- 🎯 **Rate Limiting**: Per-IP rate limiting with automatic ban mechanism
+- 🎯 **Unified Rate Limiting**: Per-IP, per-API-key, and per-JWT rate limiting with configurable request matching and automatic ban mechanism
 - 🎛️ **Dynamic Control Plane**: Runtime throttle/block/allow rules via `/admin/control` API — no restart needed
-- 🤖 **Vertex AI Rate Limiting**: Dedicated global or per-caller bucket for AI traffic, independent of per-IP limits
+- 🐢 **Throttle Delay**: Optional DDoS-safe delay on rate-limited responses to improve stability under attack
 - 💾 **Rule Persistence**: Active throttle rules survive Cloud Run instance restarts via `PROXY_THROTTLE_RULES`
 - 📊 **Structured Logging**: JSON/text logging with `slog`, Google Cloud Logging compatible
 - 🔄 **URL Rewriting**: Strip path prefixes before forwarding
@@ -205,11 +205,11 @@ curl -X POST .../admin/control \
 
 Supported actions: `throttle` (cap RPM), `block` (drop all), `allow` (bypass per-IP limit).
 
-For Vertex AI paths, add `"rateByKey": true` to apply the limit per caller identity (`x-goog-api-key`, JWT `sub`, or IP) instead of globally.
+To target a specific rate limiter, add `"limiter": "apikey"` (or `"ip"`, `"jwt"`) to the rule. This configures the named rate limiter's RPM at runtime.
 
 ### GET /admin/status
 
-Inspect all active rules and the Vertex AI bucket state:
+Inspect all active rules and rate limiter states:
 
 ```bash
 curl https://your-proxy.run.app/admin/status \
@@ -375,8 +375,9 @@ flowchart TD
     Start([HTTP Request]) --> Step1
     Step1[Header Sanitization] --> |Strip incoming X-AUTH-* headers|Step2[Path Filtering]
     Step2 --> |Check include/exclude patterns|Step3[Dynamic Rule Check]
-    Step3 --> |Admin throttle/block/allow rules|Step4[Vertex AI Rate Limit]
-    Step4 --> |Per-caller Vertex AI bucket|Step5[Per-IP Rate Limiting]
+    Step3 --> |Admin throttle/block/allow rules|Step4[API Key Rate Limit]
+    Step4 --> |Per-key matching + throttle|Step4b[JWT Rate Limit]
+    Step4b --> |Per-sub claim throttle|Step5[Per-IP Rate Limiting]
     Step5 --> |IP ban mechanism|Step6{Auth enabled?}
     Step6 --> |Both JWT and API-Key disabled: rate-limit-only mode|Backend
     Step6 --> |JWT or API-Key enabled|Step7[Authentication]

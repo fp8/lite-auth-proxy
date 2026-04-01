@@ -545,8 +545,14 @@ func TestProxyJWTRateLimitingPerUser(t *testing.T) {
 		Security: config.SecurityConfig{
 			RateLimit: config.RateLimitConfig{
 				Enabled:        true,
+				RequestsPerMin: 1000, // High IP limit so it doesn't interfere
+				BanForMin:      1,
+			},
+			JwtRateLimit: config.JwtRateLimitConfig{
+				Enabled:        true,
 				RequestsPerMin: 2, // Allow only 2 requests per minute per user
 				BanForMin:      1,
+				IncludeIP:      true,
 			},
 		},
 		Auth: config.AuthConfig{

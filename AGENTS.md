@@ -18,11 +18,11 @@ High-performance Go-based reverse proxy with JWT/API-key authentication for serv
 - **Claim Filtering**: Exact and regex pattern matching on JWT claims for fine-grained access control
 - **Email Allowlist**: Optional `allowed_emails` list on both `auth.jwt` and `admin.jwt`; empty list means no restriction
 - **Claim Mapping**: Transform JWT claims to HTTP headers for downstream services
-- **Rate Limiting**: Per-IP sliding window with configurable limits and bans
+- **Unified Rate Limiting**: Per-IP, per-API-key, and per-JWT rate limiting with configurable request matching, automatic bans, and optional DDoS-safe throttle delay
 - **Header Injection**: Inject authentication context as headers to downstream services
 - **Header Sanitization**: Prevent header injection attacks by removing incoming auth headers
 - **Health Checks**: Local or proxied health endpoints for orchestration compatibility
-- **Admin Control Plane**: Runtime throttle/block/allow rules via `/admin/control` authenticated with GCP identity tokens
+- **Admin Control Plane**: Runtime throttle/block/allow rules via `/admin/control` with `limiter` field to target specific rate limiters (`ip`, `apikey`, `jwt`)
 
 ## CONFIGURATION_SYSTEM
 
@@ -60,14 +60,44 @@ type HealthCheck struct {
 }
 
 type SecurityConfig struct {
-    RateLimit    RateLimitConfig
-    MaxBodyBytes int64           // 1 MiB default
+    RateLimit       RateLimitConfig
+    ApiKeyRateLimit ApiKeyRateLimitConfig
+    JwtRateLimit    JwtRateLimitConfig
+    MaxBodyBytes    int64           // 1 MiB default
 }
 
 type RateLimitConfig struct {
-    Enabled        bool  // false default
-    RequestsPerMin int   // 60 default
-    BanForMin      int   // 5 default
+    Enabled         bool  // false default
+    RequestsPerMin  int   // 60 default
+    BanForMin       int   // 5 default
+    ThrottleDelayMs int   // 0 default (disabled)
+    MaxDelaySlots   int   // 100 default
+}
+
+type ApiKeyRateLimitConfig struct {
+    Enabled         bool               // false default
+    RequestsPerMin  int                // 60 default
+    BanForMin       int                // 5 default
+    IncludeIP       bool               // false default — prefix key with client IP
+    KeyHeader       string             // "x-goog-api-key" default
+    Match           []MatchRule        // Request matching rules (OR between rules, AND within)
+    ThrottleDelayMs int                // 0 default
+    MaxDelaySlots   int                // 100 default
+}
+
+type JwtRateLimitConfig struct {
+    Enabled         bool  // false default
+    RequestsPerMin  int   // 60 default
+    BanForMin       int   // 5 default
+    IncludeIP       bool  // false default — prefix key with client IP
+    ThrottleDelayMs int   // 0 default
+    MaxDelaySlots   int   // 100 default
+}
+
+type MatchRule struct {
+    Host   string  // exact or /regex/
+    Path   string  // exact or /regex/
+    Header string  // header name that must be present
 }
 
 type AuthConfig struct {
@@ -158,11 +188,13 @@ HTTP Request
   ↓
 5. DynamicRuleCheck (admin throttle/block/allow rules; no-op if admin disabled)
   ↓
-6. VertexAIRateLimit (per-caller AI bucket; no-op if admin disabled)
+6. ApiKeyRateLimit (per-API-key rate limiting with configurable request matching)
   ↓
-7. RateLimiter (per-IP sliding window, ban enforcement)
+7. JwtRateLimit (per-JWT sub claim rate limiting)
   ↓
-8. ServeHTTP (main auth handler)
+8. IpRateLimit (per-IP sliding window, ban enforcement)
+  ↓
+9. ServeHTTP (main auth handler)
    ↓
    ├─ Health Check? → handleHealth() → return
    ├─ Auth Required? (from context)

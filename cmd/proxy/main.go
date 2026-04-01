@@ -75,7 +75,7 @@ func main() {
 
 	// Step 05: pre-load throttle rules from env var before serving traffic.
 	if cfg.Admin.Enabled && deps != nil && deps.RuleStore != nil {
-		loader := startup.NewRuleLoader(deps.RuleStore, deps.VertexBucket, logger)
+		loader := startup.NewRuleLoader(deps.RuleStore, deps.RateLimiters, logger)
 		if err := loader.Load(); err != nil {
 			// Non-fatal: proxy starts normally; ShockGuard re-applies rules on next cycle.
 			logger.Warn("startup rule load failed", "error", err)

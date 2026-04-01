@@ -2,20 +2,20 @@ package proxy
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
+
+	"github.com/fp8/lite-auth-proxy/internal/ratelimit"
 )
 
-type stubLimiter struct {
-	allowed      bool
-	retryAfter   int
-	seenClientIP string
-}
-
-func (s *stubLimiter) Allow(ip string) (bool, int) {
-	s.seenClientIP = ip
-	return s.allowed, s.retryAfter
+func newTestLimiter(rpm int) *ratelimit.RateLimiter {
+	return ratelimit.NewRateLimiter(ratelimit.RateLimiterConfig{
+		Name: "test", Enabled: true, RequestsPerMin: rpm, BanDuration: 5 * time.Minute,
+	})
 }
 
 func TestHeaderSanitizerStripsPrefix(t *testing.T) {
@@ -50,35 +50,37 @@ func TestShouldAuthenticateIncludeMatch(t *testing.T) {
 	}
 }
 
-func TestRateLimiterBlocksWhenLimited(t *testing.T) {
-	limiter := &stubLimiter{allowed: false, retryAfter: 42}
-	mw := RateLimiter(limiter)
+func TestIpRateLimitBlocksWhenLimited(t *testing.T) {
+	limiter := newTestLimiter(1) // 1 RPM
+	mw := IpRateLimit(limiter)
 
 	h := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	// Test rate limiting for non-auth-required paths (e.g., public paths)
+	// First request should pass
 	req := httptest.NewRequest("GET", "http://example.com/public", nil)
 	req.RemoteAddr = "203.0.113.1:1234"
-	ctxReq := req.WithContext(withAuthRequired(req.Context(), false))
-
 	resp := httptest.NewRecorder()
-	h.ServeHTTP(resp, ctxReq)
-
-	if resp.Code != http.StatusTooManyRequests {
-		t.Fatalf("expected 429, got %d", resp.Code)
+	h.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.Code)
 	}
-	if resp.Header().Get("Retry-After") != "42" {
-		t.Fatalf("expected Retry-After header to be 42, got %s", resp.Header().Get("Retry-After"))
+
+	// Second request should be rate-limited
+	resp2 := httptest.NewRecorder()
+	h.ServeHTTP(resp2, req)
+	if resp2.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429, got %d", resp2.Code)
+	}
+	if resp2.Header().Get("Retry-After") == "" {
+		t.Fatal("expected Retry-After header")
 	}
 }
 
-func TestRateLimiterBlocksAuthRequiredPaths(t *testing.T) {
-	// Rate limiter now applies to ALL paths (including auth-required) to prevent
-	// DDoS attacks via invalid auth attempts that would otherwise bypass rate limiting.
-	limiter := &stubLimiter{allowed: false, retryAfter: 42}
-	mw := RateLimiter(limiter)
+func TestIpRateLimitBlocksAuthRequiredPaths(t *testing.T) {
+	limiter := newTestLimiter(1) // 1 RPM — exhaust it first
+	mw := IpRateLimit(limiter)
 
 	handlerCalled := false
 	h := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -90,16 +92,160 @@ func TestRateLimiterBlocksAuthRequiredPaths(t *testing.T) {
 	req.RemoteAddr = "203.0.113.1:1234"
 	ctxReq := req.WithContext(withAuthRequired(req.Context(), true))
 
+	// Exhaust the limit
+	resp0 := httptest.NewRecorder()
+	h.ServeHTTP(resp0, ctxReq)
+
+	// Now this request should be rate-limited
+	handlerCalled = false
 	resp := httptest.NewRecorder()
 	h.ServeHTTP(resp, ctxReq)
 
-	// Should be rate-limited at middleware level (not reach handler)
 	if handlerCalled {
 		t.Fatal("expected handler NOT to be called when rate-limited")
 	}
 	if resp.Code != http.StatusTooManyRequests {
 		t.Fatalf("expected 429, got %d", resp.Code)
 	}
+}
+
+func TestApiKeyRateLimitMatchesAndBlocks(t *testing.T) {
+	limiter := newTestLimiter(1)
+	matcher, _ := ratelimit.NewRequestMatcher([]ratelimit.RequestMatchRule{
+		{Host: "example.com"},
+	})
+	mw := ApiKeyRateLimit(limiter, matcher, "x-api-key", false)
+
+	h := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// First request with API key: allowed
+	req := httptest.NewRequest("GET", "http://example.com/api", nil)
+	req.Host = "example.com"
+	req.RemoteAddr = "1.2.3.4:1234"
+	req.Header.Set("x-api-key", "my-secret-key")
+	resp := httptest.NewRecorder()
+	h.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.Code)
+	}
+
+	// Second request with same API key: blocked
+	resp2 := httptest.NewRecorder()
+	h.ServeHTTP(resp2, req)
+	if resp2.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429, got %d", resp2.Code)
+	}
+}
+
+func TestApiKeyRateLimitPassesThroughNonMatchingRequests(t *testing.T) {
+	limiter := newTestLimiter(0) // blocks everything
+	matcher, _ := ratelimit.NewRequestMatcher([]ratelimit.RequestMatchRule{
+		{Host: "api.example.com"},
+	})
+	mw := ApiKeyRateLimit(limiter, matcher, "x-api-key", false)
+
+	h := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// Non-matching host: should pass through
+	req := httptest.NewRequest("GET", "http://other.com/api", nil)
+	req.Host = "other.com"
+	resp := httptest.NewRecorder()
+	h.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected 200 for non-matching host, got %d", resp.Code)
+	}
+}
+
+func TestApiKeyRateLimitPerKeyIsolation(t *testing.T) {
+	limiter := newTestLimiter(1)
+	matcher, _ := ratelimit.NewRequestMatcher([]ratelimit.RequestMatchRule{
+		{Host: "example.com"},
+	})
+	mw := ApiKeyRateLimit(limiter, matcher, "x-api-key", false)
+
+	h := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// Key A: first request OK
+	req := httptest.NewRequest("GET", "http://example.com/api", nil)
+	req.Host = "example.com"
+	req.RemoteAddr = "1.2.3.4:1234"
+	req.Header.Set("x-api-key", "key-A")
+	resp := httptest.NewRecorder()
+	h.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("key-A first request: expected 200, got %d", resp.Code)
+	}
+
+	// Key B: should be independent
+	req2 := httptest.NewRequest("GET", "http://example.com/api", nil)
+	req2.Host = "example.com"
+	req2.RemoteAddr = "1.2.3.4:1234"
+	req2.Header.Set("x-api-key", "key-B")
+	resp2 := httptest.NewRecorder()
+	h.ServeHTTP(resp2, req2)
+	if resp2.Code != http.StatusOK {
+		t.Fatalf("key-B first request: expected 200, got %d", resp2.Code)
+	}
+}
+
+func TestJwtRateLimitBlocksPerSub(t *testing.T) {
+	limiter := newTestLimiter(1)
+	mw := JwtRateLimit(limiter, true)
+
+	h := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	fakeJWT := buildFakeJWT("alice")
+
+	req := httptest.NewRequest("GET", "http://example.com/api", nil)
+	req.RemoteAddr = "1.2.3.4:1234"
+	req.Header.Set("Authorization", "Bearer "+fakeJWT)
+
+	// First request: allowed
+	resp := httptest.NewRecorder()
+	h.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.Code)
+	}
+
+	// Second request: blocked
+	resp2 := httptest.NewRecorder()
+	h.ServeHTTP(resp2, req)
+	if resp2.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429, got %d", resp2.Code)
+	}
+}
+
+func TestJwtRateLimitPassesThroughWithoutBearer(t *testing.T) {
+	limiter := newTestLimiter(0) // blocks everything
+	mw := JwtRateLimit(limiter, true)
+
+	h := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// No Bearer token: passes through
+	req := httptest.NewRequest("GET", "http://example.com/api", nil)
+	resp := httptest.NewRecorder()
+	h.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected 200 without Bearer token, got %d", resp.Code)
+	}
+}
+
+func buildFakeJWT(sub string) string {
+	payload := map[string]interface{}{"sub": sub, "iss": "example.com"}
+	payloadBytes, _ := json.Marshal(payload)
+	return "eyJhbGciOiJSUzI1NiJ9." +
+		base64.RawURLEncoding.EncodeToString(payloadBytes) +
+		".fakesignature"
 }
 
 func withAuthRequired(ctx context.Context, required bool) context.Context {

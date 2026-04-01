@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/fp8/lite-auth-proxy/internal/admin"
@@ -24,21 +23,22 @@ type PersistedRule struct {
 	MaxRPM      int     `json:"maxRPM,omitempty"`
 	PathPattern *string `json:"pathPattern,omitempty"`
 	RateByKey   bool    `json:"rateByKey,omitempty"`
-	ExpiresAt   string  `json:"expiresAt"` // RFC 3339
+	Limiter     string  `json:"limiter,omitempty"` // "ip", "apikey", or "jwt"
+	ExpiresAt   string  `json:"expiresAt"`         // RFC 3339
 }
 
 // RuleLoader loads persisted throttle rules from PROXY_THROTTLE_RULES on startup.
 type RuleLoader struct {
 	store        *admin.RuleStore
-	vertexBucket *ratelimit.VertexAIBucket // may be nil if admin is disabled
+	rateLimiters map[string]*ratelimit.RateLimiter
 	logger       *slog.Logger
 }
 
-// NewRuleLoader creates a RuleLoader. vertexBucket may be nil.
-func NewRuleLoader(store *admin.RuleStore, vertexBucket *ratelimit.VertexAIBucket, logger *slog.Logger) *RuleLoader {
+// NewRuleLoader creates a RuleLoader. rateLimiters may be nil.
+func NewRuleLoader(store *admin.RuleStore, rateLimiters map[string]*ratelimit.RateLimiter, logger *slog.Logger) *RuleLoader {
 	return &RuleLoader{
 		store:        store,
-		vertexBucket: vertexBucket,
+		rateLimiters: rateLimiters,
 		logger:       logger,
 	}
 }
@@ -86,6 +86,7 @@ func (l *RuleLoader) Load() error {
 			MaxRPM:          pr.MaxRPM,
 			PathPattern:     pr.PathPattern,
 			RateByKey:       pr.RateByKey,
+			Limiter:         pr.Limiter,
 			DurationSeconds: remaining,
 		}
 
@@ -97,8 +98,12 @@ func (l *RuleLoader) Load() error {
 			continue
 		}
 
-		if l.vertexBucket != nil && isVertexAIRule(pr) {
-			l.vertexBucket.SetMaxRPM(pr.MaxRPM, pr.RateByKey)
+		// Wire rate limiter if the rule targets one.
+		if pr.Limiter != "" && pr.Action == "throttle" {
+			if limiter, ok := l.rateLimiters[pr.Limiter]; ok {
+				limiter.SetRequestsPerMin(pr.MaxRPM)
+				limiter.Enable()
+			}
 		}
 
 		loaded++
@@ -108,12 +113,4 @@ func (l *RuleLoader) Load() error {
 		l.logger.Info("startup rule loader: loaded rules from PROXY_THROTTLE_RULES", "count", loaded)
 	}
 	return nil
-}
-
-// isVertexAIRule returns true if the rule targets Vertex AI endpoints.
-func isVertexAIRule(pr PersistedRule) bool {
-	if pr.PathPattern != nil && strings.Contains(*pr.PathPattern, "/v1/projects/") {
-		return true
-	}
-	return strings.Contains(pr.TargetHost, "aiplatform.googleapis.com")
 }

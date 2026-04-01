@@ -4,22 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/fp8/lite-auth-proxy/internal/ratelimit"
 )
 
-// VertexAIBucket is the interface for controlling and querying the Vertex AI rate-limit bucket.
-// Implemented by *ratelimit.VertexAIBucket.
-type VertexAIBucket interface {
-	SetMaxRPM(maxRPM int, perKey bool)
-	Disable()
-	GetStatus() *ratelimit.VertexAIStatus
-}
-
 // ControlHandler handles POST /admin/control requests.
-func ControlHandler(store *RuleStore, vertexBucket VertexAIBucket) http.Handler {
+func ControlHandler(store *RuleStore, rateLimiters map[string]*ratelimit.RateLimiter) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req ControlRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -32,11 +23,11 @@ func ControlHandler(store *RuleStore, vertexBucket VertexAIBucket) http.Handler 
 
 		switch req.Command {
 		case "set-rule":
-			handleSetRule(w, store, vertexBucket, req.Rule)
+			handleSetRule(w, store, rateLimiters, req.Rule)
 		case "remove-rule":
-			handleRemoveRule(w, store, vertexBucket, req.RuleID)
+			handleRemoveRule(w, store, rateLimiters, req.RuleID)
 		case "remove-all":
-			handleRemoveAll(w, store, vertexBucket)
+			handleRemoveAll(w, store, rateLimiters)
 		default:
 			writeAdminJSON(w, http.StatusBadRequest, map[string]string{
 				"error":   "bad_request",
@@ -46,7 +37,7 @@ func ControlHandler(store *RuleStore, vertexBucket VertexAIBucket) http.Handler 
 	})
 }
 
-func handleSetRule(w http.ResponseWriter, store *RuleStore, vertexBucket VertexAIBucket, rule *Rule) {
+func handleSetRule(w http.ResponseWriter, store *RuleStore, rateLimiters map[string]*ratelimit.RateLimiter, rule *Rule) {
 	if rule == nil {
 		writeAdminJSON(w, http.StatusBadRequest, map[string]string{
 			"error": "bad_request", "message": "rule is required for set-rule",
@@ -66,9 +57,12 @@ func handleSetRule(w http.ResponseWriter, store *RuleStore, vertexBucket VertexA
 		return
 	}
 
-	// Wire Vertex AI bucket if this rule targets a Vertex AI path.
-	if vertexBucket != nil && rule.Action == "throttle" && isVertexAIPath(rule.PathPattern) {
-		vertexBucket.SetMaxRPM(rule.MaxRPM, rule.RateByKey)
+	// Wire rate limiter if the rule targets one and action is throttle.
+	if rule.Action == "throttle" && rule.Limiter != "" {
+		if limiter, ok := rateLimiters[rule.Limiter]; ok {
+			limiter.SetRequestsPerMin(rule.MaxRPM)
+			limiter.Enable()
+		}
 	}
 
 	writeAdminJSON(w, http.StatusOK, SetRuleResponse{
@@ -78,7 +72,7 @@ func handleSetRule(w http.ResponseWriter, store *RuleStore, vertexBucket VertexA
 	})
 }
 
-func handleRemoveRule(w http.ResponseWriter, store *RuleStore, vertexBucket VertexAIBucket, ruleID string) {
+func handleRemoveRule(w http.ResponseWriter, store *RuleStore, rateLimiters map[string]*ratelimit.RateLimiter, ruleID string) {
 	if ruleID == "" {
 		writeAdminJSON(w, http.StatusBadRequest, map[string]string{
 			"error": "bad_request", "message": "ruleId is required for remove-rule",
@@ -98,20 +92,14 @@ func handleRemoveRule(w http.ResponseWriter, store *RuleStore, vertexBucket Vert
 		})
 		return
 	}
-	if vertexBucket != nil {
-		vertexBucket.Disable()
-	}
 	writeAdminJSON(w, http.StatusOK, RemoveResponse{
 		Status:       "ok",
 		RulesRemoved: 1,
 	})
 }
 
-func handleRemoveAll(w http.ResponseWriter, store *RuleStore, vertexBucket VertexAIBucket) {
+func handleRemoveAll(w http.ResponseWriter, store *RuleStore, rateLimiters map[string]*ratelimit.RateLimiter) {
 	count := store.RemoveAll()
-	if vertexBucket != nil {
-		vertexBucket.Disable()
-	}
 	writeAdminJSON(w, http.StatusOK, RemoveResponse{
 		Status:       "ok",
 		RulesRemoved: count,
@@ -119,14 +107,15 @@ func handleRemoveAll(w http.ResponseWriter, store *RuleStore, vertexBucket Verte
 }
 
 // StatusHandler handles GET /admin/status requests.
-func StatusHandler(store *RuleStore, vertexBucket VertexAIBucket) http.Handler {
+func StatusHandler(store *RuleStore, rateLimiters map[string]*ratelimit.RateLimiter) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		resp := StatusResponse{
-			Rules:    store.GetStatus(),
-			VertexAI: nil,
+		limiterStatus := make(map[string]interface{})
+		for name, limiter := range rateLimiters {
+			limiterStatus[name] = limiter.GetStatus()
 		}
-		if vertexBucket != nil {
-			resp.VertexAI = vertexBucket.GetStatus()
+		resp := StatusResponse{
+			Rules:        store.GetStatus(),
+			RateLimiters: limiterStatus,
 		}
 		writeAdminJSON(w, http.StatusOK, resp)
 	})
@@ -151,15 +140,6 @@ func validateRule(rule *Rule) error {
 		return fmt.Errorf("durationSeconds must be > 0")
 	}
 	return nil
-}
-
-// isVertexAIPath returns true if the path pattern targets Vertex AI endpoints.
-func isVertexAIPath(pattern *string) bool {
-	if pattern == nil {
-		return false
-	}
-	return strings.Contains(*pattern, "/v1/projects/") ||
-		strings.Contains(*pattern, "aiplatform.googleapis.com")
 }
 
 func writeAdminJSON(w http.ResponseWriter, status int, payload interface{}) {

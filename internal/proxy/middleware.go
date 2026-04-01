@@ -2,6 +2,9 @@ package proxy
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
 	"log/slog"
 	"net"
 	"net/http"
@@ -65,11 +68,6 @@ func (r *statusRecorder) WriteHeader(code int) {
 	r.ResponseWriter.WriteHeader(code)
 }
 
-// Limiter defines the interface used by rate limit middleware.
-type Limiter interface {
-	Allow(ip string) (bool, int)
-}
-
 // Middleware wraps an http.Handler.
 type Middleware func(http.Handler) http.Handler
 
@@ -94,11 +92,9 @@ func PathFilter(includePaths, excludePaths []string) Middleware {
 	}
 }
 
-// RateLimiter enforces per-IP rate limits for all requests regardless of auth status.
+// IpRateLimit enforces per-IP rate limits for all requests regardless of auth status.
 // This provides DDoS protection by capping requests per IP before any auth processing.
-// For authenticated JWT paths, the handler applies additional per-identity rate limiting
-// using a different key (hashed IP+sub), which does not conflict with the IP-based limit here.
-func RateLimiter(limiter Limiter) Middleware {
+func IpRateLimit(limiter *ratelimit.RateLimiter) Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if limiter == nil {
@@ -109,7 +105,7 @@ func RateLimiter(limiter Limiter) Middleware {
 			ip := ClientIP(r)
 			allowed, retryAfter := limiter.Allow(ip)
 			if !allowed {
-				writeRateLimitResponse(w, retryAfter)
+				handleRateLimited(w, retryAfter, limiter)
 				return
 			}
 
@@ -118,25 +114,79 @@ func RateLimiter(limiter Limiter) Middleware {
 	}
 }
 
-// VertexAIRateLimit enforces the Vertex AI rate-limit bucket.
-// In per-key mode the limit applies per caller identity; in global mode it applies
-// to all Vertex AI traffic in aggregate.
-// When bucket is nil (admin disabled) the middleware is a no-op passthrough.
-func VertexAIRateLimit(bucket *ratelimit.VertexAIBucket) Middleware {
+// ApiKeyRateLimit enforces per-API-key rate limits for requests matching the configured rules.
+// When no rules match, the middleware is a passthrough.
+// keyHeader is the primary header to extract the API key from (e.g. "x-goog-api-key").
+func ApiKeyRateLimit(limiter *ratelimit.RateLimiter, matcher *ratelimit.RequestMatcher, keyHeader string, includeIP bool) Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if bucket == nil || !ratelimit.IsVertexAIRequest(r) {
+			if limiter == nil || matcher == nil || !matcher.Matches(r) {
 				next.ServeHTTP(w, r)
 				return
 			}
-			identity := ratelimit.ExtractVertexAICallerIdentity(r)
-			if !bucket.ShouldAllow(identity) {
-				writeRateLimitResponse(w, 60)
+
+			key := extractApiKey(r, keyHeader)
+			if key == "" {
+				key = ClientIP(r) // fallback to IP if no API key found
+			} else {
+				key = "k:" + hashIdentity(key)
+			}
+
+			if includeIP {
+				key = ClientIP(r) + ":" + key
+			}
+
+			allowed, retryAfter := limiter.Allow(key)
+			if !allowed {
+				handleRateLimited(w, retryAfter, limiter)
 				return
 			}
+
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// JwtRateLimit enforces per-JWT-identity rate limits using the Bearer token's sub claim.
+// Uses a non-validating JWT parse (rate limiting runs before expensive JWT validation).
+// When no Bearer token or sub claim is present, the middleware is a passthrough.
+func JwtRateLimit(limiter *ratelimit.RateLimiter, includeIP bool) Middleware {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if limiter == nil {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			sub := extractBearerSub(r.Header.Get("Authorization"))
+			if sub == "" {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			key := "s:" + sub
+			if includeIP {
+				key = ClientIP(r) + ":" + key
+			}
+
+			allowed, retryAfter := limiter.Allow(key)
+			if !allowed {
+				handleRateLimited(w, retryAfter, limiter)
+				return
+			}
+
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// handleRateLimited applies the optional throttle delay before writing a 429 response.
+func handleRateLimited(w http.ResponseWriter, retryAfter int, limiter *ratelimit.RateLimiter) {
+	if limiter.TryAcquireDelaySlot() {
+		defer limiter.ReleaseDelaySlot()
+		time.Sleep(limiter.ThrottleDelay())
+	}
+	writeRateLimitResponse(w, retryAfter)
 }
 
 // BodyLimiter rejects requests whose body exceeds maxBytes.
@@ -240,4 +290,44 @@ func ClientIP(r *http.Request) string {
 	}
 
 	return r.RemoteAddr
+}
+
+// extractApiKey extracts an API key from the request, checking the given header
+// name first, then the "key" query parameter.
+func extractApiKey(r *http.Request, keyHeader string) string {
+	if keyHeader != "" {
+		if key := r.Header.Get(keyHeader); key != "" {
+			return key
+		}
+	}
+	return r.URL.Query().Get("key")
+}
+
+// hashIdentity returns the first 16 base64url chars of the SHA-256 of raw.
+func hashIdentity(raw string) string {
+	h := sha256.Sum256([]byte(raw))
+	return base64.RawURLEncoding.EncodeToString(h[:12]) // 96 bits → 16 chars
+}
+
+// extractBearerSub does a non-validating parse of a Bearer JWT to read the sub claim.
+// Returns "" if the header is absent, not a JWT, or has no sub claim.
+func extractBearerSub(authHeader string) string {
+	if !strings.HasPrefix(authHeader, "Bearer ") {
+		return ""
+	}
+	token := strings.TrimPrefix(authHeader, "Bearer ")
+	parts := strings.SplitN(token, ".", 3)
+	if len(parts) != 3 {
+		return ""
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return ""
+	}
+	var claims map[string]interface{}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return ""
+	}
+	sub, _ := claims["sub"].(string)
+	return sub
 }

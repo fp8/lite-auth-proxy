@@ -8,12 +8,22 @@ import (
 	"github.com/fp8/lite-auth-proxy/internal/ratelimit"
 )
 
-func newTestLoader(t *testing.T) (*RuleLoader, *admin.RuleStore, *ratelimit.VertexAIBucket) {
+func newTestLoader(t *testing.T) (*RuleLoader, *admin.RuleStore, map[string]*ratelimit.RateLimiter) {
 	t.Helper()
 	store := admin.NewRuleStore()
 	t.Cleanup(store.Stop)
-	bucket := ratelimit.NewVertexAIBucket()
-	return NewRuleLoader(store, bucket, nil), store, bucket
+	rateLimiters := map[string]*ratelimit.RateLimiter{
+		"ip": ratelimit.NewRateLimiter(ratelimit.RateLimiterConfig{
+			Name: "ip", Enabled: true, RequestsPerMin: 60, BanDuration: 5 * time.Minute,
+		}),
+		"apikey": ratelimit.NewRateLimiter(ratelimit.RateLimiterConfig{
+			Name: "apikey", Enabled: false, RequestsPerMin: 60, BanDuration: 5 * time.Minute,
+		}),
+		"jwt": ratelimit.NewRateLimiter(ratelimit.RateLimiterConfig{
+			Name: "jwt", Enabled: false, RequestsPerMin: 60, BanDuration: 5 * time.Minute,
+		}),
+	}
+	return NewRuleLoader(store, rateLimiters, nil), store, rateLimiters
 }
 
 func setEnv(t *testing.T, key, value string) {
@@ -71,34 +81,29 @@ func TestRuleLoader_RemainingDuration_IsCorrect(t *testing.T) {
 	if len(rules) != 1 {
 		t.Fatalf("expected 1 rule, got %d", len(rules))
 	}
-	// The remaining duration should be within 2s of 300s
-	// We check this by verifying the rule is still active (not yet expired)
 	if rules[0].Status != "active" {
 		t.Fatalf("expected status 'active', got %s", rules[0].Status)
 	}
 }
 
-func TestRuleLoader_VertexAIRule_ConfiguresBucket(t *testing.T) {
-	loader, _, bucket := newTestLoader(t)
+func TestRuleLoader_LimiterRule_ConfiguresLimiter(t *testing.T) {
+	loader, _, rateLimiters := newTestLoader(t)
 
-	pp := "/v1/projects/"
 	expiresAt := time.Now().Add(1 * time.Hour).UTC().Format(time.RFC3339)
-	raw := `[{"ruleId":"vx","targetHost":"-aiplatform.googleapis.com","action":"throttle","maxRPM":100,"pathPattern":"/v1/projects/","rateByKey":true,"expiresAt":"` + expiresAt + `","durationSeconds":3600}]`
-	_ = pp
+	raw := `[{"ruleId":"ak1","targetHost":"api.example.com","action":"throttle","maxRPM":100,"limiter":"apikey","expiresAt":"` + expiresAt + `","durationSeconds":3600}]`
 	setEnv(t, EnvThrottleRules, raw)
 
 	if err := loader.Load(); err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	status := bucket.GetStatus()
-	if status == nil {
-		t.Fatal("expected Vertex AI bucket status to be non-nil")
+
+	apikeyLimiter := rateLimiters["apikey"]
+	status := apikeyLimiter.GetStatus()
+	if !status.Enabled {
+		t.Fatal("expected apikey limiter to be enabled")
 	}
-	if status.MaxRPM != 100 {
-		t.Fatalf("expected maxRPM=100, got %d", status.MaxRPM)
-	}
-	if status.Mode != "per-key" {
-		t.Fatalf("expected mode=per-key, got %s", status.Mode)
+	if status.RequestsPerMin != 100 {
+		t.Fatalf("expected RPM=100, got %d", status.RequestsPerMin)
 	}
 }
 

@@ -20,6 +20,7 @@ type Rule struct {
 	MaxRPM          int       `json:"maxRPM,omitempty"`
 	PathPattern     *string   `json:"pathPattern,omitempty"`
 	RateByKey       bool      `json:"rateByKey,omitempty"`
+	Limiter         string    `json:"limiter,omitempty"` // "ip", "apikey", or "jwt" — targets a specific rate limiter
 	DurationSeconds int       `json:"durationSeconds"`
 	ExpiresAt       time.Time `json:"-"`
 	currentRPM      atomic.Int64
@@ -54,11 +55,9 @@ type RemoveResponse struct {
 }
 
 // StatusResponse is the response body for GET /admin/status.
-// VertexAI is interface{} to avoid import cycles; it is populated with
-// *ratelimit.VertexAIStatus when Vertex AI support is wired in (Step 03+).
 type StatusResponse struct {
-	Rules    []RuleStatus `json:"rules"`
-	VertexAI interface{}  `json:"vertexAI"`
+	Rules        []RuleStatus           `json:"rules"`
+	RateLimiters map[string]interface{} `json:"rateLimiters"`
 }
 
 // RuleStatus is a snapshot of a single rule included in StatusResponse.
