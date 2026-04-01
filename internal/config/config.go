@@ -22,16 +22,8 @@ type Config struct {
 
 // AdminConfig contains settings for the dynamic control-plane API.
 type AdminConfig struct {
-	Enabled bool            `toml:"enabled"`
-	JWT     AdminJWTConfig  `toml:"jwt"`
-}
-
-// AdminJWTConfig holds JWT validation settings for the admin API.
-// The admin API uses GCP service account identity tokens (OIDC JWTs).
-type AdminJWTConfig struct {
-	Issuer        string   `toml:"issuer"`
-	Audience      string   `toml:"audience"`
-	AllowedEmails []string `toml:"allowed_emails"`
+	Enabled bool      `toml:"enabled"`
+	JWT     JWTConfig `toml:"jwt"`
 }
 
 // ServerConfig contains HTTP server and proxy settings
@@ -71,7 +63,9 @@ type AuthConfig struct {
 	APIKey       APIKeyConfig `toml:"api_key"`
 }
 
-// JWTConfig contains JWT authentication settings
+// JWTConfig contains JWT authentication settings.
+// Used for both the main auth path (auth.jwt) and the admin control-plane (admin.jwt).
+// AllowedEmails is only used for admin.jwt to restrict access to specific identities.
 type JWTConfig struct {
 	Enabled       bool              `toml:"enabled"`
 	Issuer        string            `toml:"issuer"`
@@ -80,6 +74,7 @@ type JWTConfig struct {
 	CacheTTLMins  int               `toml:"cache_ttl_mins"`
 	Filters       map[string]string `toml:"filters"`
 	Mappings      map[string]string `toml:"mappings"`
+	AllowedEmails []string          `toml:"allowed_emails"`
 }
 
 // APIKeyConfig contains API key authentication settings
@@ -355,6 +350,16 @@ func setDefaults(config *Config) {
 		config.Auth.JWT.CacheTTLMins = 1440 // 24 hours
 	}
 
+	// Admin JWT defaults
+	if config.Admin.Enabled {
+		if config.Admin.JWT.ToleranceSecs == 0 {
+			config.Admin.JWT.ToleranceSecs = 30
+		}
+		if config.Admin.JWT.CacheTTLMins == 0 {
+			config.Admin.JWT.CacheTTLMins = 1440 // 24 hours
+		}
+	}
+
 	// API Key defaults
 	if config.Auth.APIKey.Name == "" {
 		config.Auth.APIKey.Name = "X-API-KEY"
@@ -411,11 +416,6 @@ func fetchGCPProjectID() string {
 
 // validate checks that the configuration is valid
 func validate(config *Config) error {
-	// At least one auth method must be enabled
-	if !config.Auth.JWT.Enabled && !config.Auth.APIKey.Enabled {
-		return fmt.Errorf("at least one authentication method (JWT or API-Key) must be enabled")
-	}
-
 	// JWT validation
 	if config.Auth.JWT.Enabled {
 		if config.Auth.JWT.Issuer == "" {
@@ -441,6 +441,19 @@ func validate(config *Config) error {
 		// Check if placeholders are still present
 		if strings.Contains(config.Auth.APIKey.Value, "{{ENV.") {
 			return fmt.Errorf("unresolved environment variable in API key value")
+		}
+	}
+
+	// Admin JWT validation
+	if config.Admin.Enabled {
+		if config.Admin.JWT.Issuer == "" {
+			return fmt.Errorf("admin JWT issuer is required when admin API is enabled")
+		}
+		if config.Admin.JWT.Audience == "" {
+			return fmt.Errorf("admin JWT audience is required when admin API is enabled")
+		}
+		if len(config.Admin.JWT.AllowedEmails) == 0 && len(config.Admin.JWT.Filters) == 0 {
+			return fmt.Errorf("admin JWT requires at least one of allowed_emails or filters when admin API is enabled")
 		}
 	}
 

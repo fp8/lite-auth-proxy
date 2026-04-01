@@ -1,6 +1,23 @@
 # lite-auth-proxy
 
-# 1.1.0 [TBD]
+# 1.1.1 [2026-04-01]
+
+## Unified JWT Config
+
+* **Merged `AdminJWTConfig` into `JWTConfig`** — the `[admin.jwt]` section now uses the same configuration structure as `[auth.jwt]`, eliminating the separate `AdminJWTConfig` type. The `admin.jwt` block accepts all standard JWT fields (`issuer`, `audience`, `tolerance_secs`, `cache_ttl_mins`, `filters`, `mappings`, `allowed_emails`).
+* **Added `[admin.jwt.filters]`** — admin access can now be restricted by any JWT claim using exact-match or regex rules (e.g. `hd = "yourcompany.com"` to allow an entire Google Workspace domain).
+* **Relaxed admin access control:** `allowed_emails` and `filters` are both optional; at least one must be provided when `admin.enabled = true`. When both are configured, all conditions must pass.
+
+## Rate-Limit-Only Mode
+
+* **Both auth methods can now be disabled simultaneously.** Setting `auth.jwt.enabled = false` and `auth.api_key.enabled = false` no longer causes a startup error. The proxy operates in **rate-limit-only mode**: all requests on protected paths are forwarded without credential checks while rate limiting and admin dynamic rules remain active. This is useful when only DDoS protection is needed without authentication.
+
+## Flexible Email Access Control (`allowed_emails`)
+
+* **`allowed_emails` added to `JWTConfig`** — both `[auth.jwt]` and `[admin.jwt]` now support an optional `allowed_emails` list to restrict access to specific email identities in the token's `email` claim.
+* **Empty `allowed_emails` means no restriction.** Previously an unconfigured email list caused automatic rejection; it now means any authenticated token is accepted. Explicit lists are only enforced when non-empty.
+
+# 1.1.0 [2026-03-31]
 
 * Added optional `/admin` control-plane API (`POST /admin/control`, `GET /admin/status`) to set, remove, and inspect dynamic rate-limit rules at runtime without redeploying
 * Dynamic rules are evaluated before per-IP rate limiting and support `throttle`, `block`, and `allow` actions with automatic expiry

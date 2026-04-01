@@ -121,19 +121,12 @@ func NewHandlerWithDeps(cfg *config.Config, logger *slog.Logger) (http.Handler, 
 	mux := http.NewServeMux()
 
 	if cfg.Admin.Enabled {
-		adminJWTConfig := &config.JWTConfig{
-			Enabled:       true,
-			Issuer:        cfg.Admin.JWT.Issuer,
-			Audience:      cfg.Admin.JWT.Audience,
-			ToleranceSecs: 30,
-			CacheTTLMins:  1440,
-		}
-		adminValidator := jwt.NewValidator(adminJWTConfig)
+		adminValidator := jwt.NewValidator(&cfg.Admin.JWT)
 		ruleStore = admin.NewRuleStore()
 		ruleChecker = ruleStore
 		vertexBucket = ratelimit.NewVertexAIBucket()
 
-		adminAuth := admin.AdminAuthMiddleware(adminValidator, cfg.Admin.JWT.AllowedEmails)
+		adminAuth := admin.AdminAuthMiddleware(adminValidator, cfg.Admin.JWT.AllowedEmails, cfg.Admin.JWT.Filters)
 		mux.Handle("POST /admin/control", adminAuth(admin.ControlHandler(ruleStore, vertexBucket)))
 		mux.Handle("GET /admin/status", adminAuth(admin.StatusHandler(ruleStore, vertexBucket)))
 	}
@@ -186,6 +179,12 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Rate-limit-only mode: both auth methods disabled → pass through without credential check
+	if !h.cfg.Auth.JWT.Enabled && !h.cfg.Auth.APIKey.Enabled {
+		h.forward(w, r)
+		return
+	}
+
 	ip := ClientIP(r)
 	bearerToken, hasBearer := extractBearerToken(r.Header.Get("Authorization"))
 	if h.cfg.Auth.JWT.Enabled && hasBearer {
@@ -201,6 +200,18 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				Message: "access denied",
 			})
 			return
+		}
+
+		// Check explicit email allowlist when configured.
+		// An empty AllowedEmails means no restriction — skip the check.
+		if len(h.cfg.Auth.JWT.AllowedEmails) > 0 {
+			if !isEmailAllowed(claims, h.cfg.Auth.JWT.AllowedEmails) {
+				writeJSON(w, http.StatusUnauthorized, errorResponse{
+					Error:   "unauthorized",
+					Message: "access denied",
+				})
+				return
+			}
 		}
 
 		// Apply rate limiting based on JWT sub claim
@@ -367,6 +378,22 @@ func newReverseProxy(target *url.URL, stripPrefix string, useExactPath bool) *ht
 	}
 
 	return &httputil.ReverseProxy{Director: director}
+}
+
+// isEmailAllowed returns true if the "email" claim in claims matches one of the
+// allowedEmails entries (case-insensitive). Returns false when email is absent.
+func isEmailAllowed(claims jwt.Claims, allowedEmails []string) bool {
+	email, _ := claims["email"].(string)
+	if email == "" {
+		return false
+	}
+	emailLower := strings.ToLower(email)
+	for _, allowed := range allowedEmails {
+		if strings.ToLower(allowed) == emailLower {
+			return true
+		}
+	}
+	return false
 }
 
 // hashKey hashes an IP-sub pair for memory-efficient rate limit tracking.

@@ -13,7 +13,7 @@ import (
 // allowedEmail is a helper to construct a middleware that always authenticates.
 func authedMiddleware(email string) func(http.Handler) http.Handler {
 	v := &mockValidator{claims: jwt.Claims{"email": email}}
-	return AdminAuthMiddleware(v, []string{email})
+	return AdminAuthMiddleware(v, []string{email}, nil)
 }
 
 func buildMux(t *testing.T) *http.ServeMux {

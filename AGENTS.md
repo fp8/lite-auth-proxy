@@ -14,12 +14,15 @@ High-performance Go-based reverse proxy with JWT/API-key authentication for serv
 ## KEY_CAPABILITIES
 - **JWT Authentication**: OpenID Connect compliant with automatic JWKS discovery
 - **API-Key Authentication**: Independent authentication method with constant-time comparison
+- **Rate-Limit-Only Mode**: Both auth methods can be disabled; requests are forwarded without credential checks while rate limiting still applies
 - **Claim Filtering**: Exact and regex pattern matching on JWT claims for fine-grained access control
+- **Email Allowlist**: Optional `allowed_emails` list on both `auth.jwt` and `admin.jwt`; empty list means no restriction
 - **Claim Mapping**: Transform JWT claims to HTTP headers for downstream services
 - **Rate Limiting**: Per-IP sliding window with configurable limits and bans
 - **Header Injection**: Inject authentication context as headers to downstream services
 - **Header Sanitization**: Prevent header injection attacks by removing incoming auth headers
 - **Health Checks**: Local or proxied health endpoints for orchestration compatibility
+- **Admin Control Plane**: Runtime throttle/block/allow rules via `/admin/control` authenticated with GCP identity tokens
 
 ## CONFIGURATION_SYSTEM
 
@@ -38,6 +41,7 @@ type Config struct {
     Server   ServerConfig
     Security SecurityConfig
     Auth     AuthConfig
+    Admin    AdminConfig
 }
 
 type ServerConfig struct {
@@ -56,7 +60,8 @@ type HealthCheck struct {
 }
 
 type SecurityConfig struct {
-    RateLimit RateLimitConfig
+    RateLimit    RateLimitConfig
+    MaxBodyBytes int64           // 1 MiB default
 }
 
 type RateLimitConfig struct {
@@ -71,21 +76,35 @@ type AuthConfig struct {
     APIKey       APIKeyConfig
 }
 
+// JWTConfig is shared by both [auth.jwt] and [admin.jwt].
+// AllowedEmails is only enforced when non-empty; an empty slice means no
+// email restriction. At least one of AllowedEmails or Filters must be
+// non-empty when used for admin.jwt.
 type JWTConfig struct {
-    Enabled      bool                // false default
-    Issuer       string              // Required if enabled
-    Audience     string              // Required if enabled
+    Enabled       bool                // false default
+    Issuer        string              // Required if enabled
+    Audience      string              // Required if enabled
     ToleranceSecs int                 // 30 default
-    CacheTTLMins int                 // 1440 (24h) default
-    Filters      map[string]string   // Claim validation rules
-    Mappings     map[string]string   // Claim→Header mappings
+    CacheTTLMins  int                 // 1440 (24h) default
+    Filters       map[string]string   // Claim validation rules (exact or /regex/)
+    Mappings      map[string]string   // Claim→Header mappings (auth.jwt only)
+    AllowedEmails []string            // Optional email allowlist; empty = no restriction
 }
 
 type APIKeyConfig struct {
     Enabled bool              // false default
     Name    string            // "X-API-KEY" default
     Value   string            // Required if enabled
-    Payload map[string]string   // Static headers to inject
+    Payload map[string]string // Static headers to inject
+}
+
+// AdminConfig controls the admin control-plane API.
+// JWT uses the shared JWTConfig structure (same fields as auth.jwt).
+// Requires: admin.jwt.issuer, admin.jwt.audience, and at least one of
+// admin.jwt.allowed_emails or admin.jwt.filters.
+type AdminConfig struct {
+    Enabled bool      // false default
+    JWT     JWTConfig
 }
 ```
 
@@ -105,6 +124,13 @@ Examples:
 
 Precedence: Env overrides > TOML (after substitution) > Defaults
 
+### Config Validation Rules
+- `auth.jwt.enabled = true` requires `issuer` and `audience`
+- `auth.api_key.enabled = true` requires `value`
+- Both `auth.jwt` and `auth.api_key` disabled is **valid** — proxy operates in rate-limit-only mode (no credential checks)
+- `admin.enabled = true` requires `admin.jwt.issuer`, `admin.jwt.audience`, and at least one of `admin.jwt.allowed_emails` or `admin.jwt.filters`
+- `server.port` must be 1–65535
+
 ### GOOGLE_CLOUD_PROJECT Auto-Detection
 Sources (in order):
 1. `GOOGLE_CLOUD_PROJECT` env var
@@ -118,28 +144,43 @@ Used for: JWT issuer/audience string replacement
 ```
 HTTP Request
   ↓
+[Admin mux — registered only when admin.enabled = true]
+  ├─ POST /admin/control → AdminAuthMiddleware → ControlHandler
+  └─ GET  /admin/status  → AdminAuthMiddleware → StatusHandler
+  ↓
 1. RequestLogger (log method, path, start time)
   ↓
-2. HeaderSanitizer (remove incoming X-AUTH-* headers)
+2. BodyLimiter (reject body > max_body_bytes with 413)
   ↓
-3. PathFilter (check include/exclude patterns, set context flag)
+3. HeaderSanitizer (remove incoming X-AUTH-* headers)
   ↓
-4. RateLimiter (per-IP sliding window, ban enforcement)
+4. PathFilter (check include/exclude patterns, set context flag)
   ↓
-5. ServeHTTP (main auth handler)
+5. DynamicRuleCheck (admin throttle/block/allow rules; no-op if admin disabled)
+  ↓
+6. VertexAIRateLimit (per-caller AI bucket; no-op if admin disabled)
+  ↓
+7. RateLimiter (per-IP sliding window, ban enforcement)
+  ↓
+8. ServeHTTP (main auth handler)
    ↓
    ├─ Health Check? → handleHealth() → return
    ├─ Auth Required? (from context)
    │   ↓ NO → Forward to proxy
    │   ↓ YES
+   │   ├─ Both JWT and API-Key disabled? (rate-limit-only mode)
+   │   │   ↓ YES → Forward to proxy (no credential check)
+   │   │   ↓ NO
    │   ├─ JWT Auth Enabled + Bearer Token Present?
    │   │   ↓ YES
    │   │   ├─ ValidateToken() → Claims | Error
-   │   │   ├─ EvaluateFilters(claims, config.Filters) → Pass | Fail
-   │   │   ├─ MapClaims(claims, config.Mappings) → Headers
+   │   │   ├─ EvaluateFilters(claims, config.JWT.Filters) → Pass | Fail
+   │   │   ├─ AllowedEmails non-empty? → check email claim | skip
+   │   │   ├─ limiter.Allow(hash(IP, sub)) → Pass | 429
+   │   │   ├─ MapClaims(claims, config.JWT.Mappings) → Headers
    │   │   ├─ Inject headers into request
    │   │   └─ Forward to proxy
-   │   │   ↓ NO (JWT failed or not present)
+   │   │   ↓ NO (JWT not enabled or bearer token absent)
    │   └─ API-Key Auth Enabled?
    │       ↓ YES
    │       ├─ ValidateAPIKey(request) → Headers | Error
@@ -148,11 +189,32 @@ HTTP Request
    │       ↓ NO
    │       └─ 401 Unauthorized
   ↓
-6. Reverse Proxy (httputil.ReverseProxy)
+9. Reverse Proxy (httputil.ReverseProxy)
    ├─ Rewrite URL (strip prefix if configured)
    ├─ Forward to config.Server.TargetURL
    └─ Return response to client
 ```
+
+### Admin Auth Middleware (internal/admin/auth.go)
+AdminAuthMiddleware(validator, allowedEmails, filters) — applied to `/admin/*` routes when `admin.enabled = true`.
+
+```
+Bearer token extracted from Authorization header
+  ↓
+ValidateToken() → Claims | 401
+  ↓
+len(filters) > 0? → EvaluateFilters(claims, filters) → Pass | 401
+  ↓
+len(allowedEmails) > 0? → check email claim in allowedEmails | 401
+  ↓
+Next handler
+```
+
+Access control rules:
+- `filters` and `allowedEmails` are evaluated independently
+- Both are **optional**: an empty map / nil slice means that check is skipped entirely
+- When both are set, **all** conditions must pass (AND logic)
+- Config validation requires at least one of `filters` or `allowed_emails` to be non-empty when `admin.enabled = true`
 
 ### JWT Validation Logic (internal/auth/jwt/validator.go)
 
@@ -209,12 +271,17 @@ Filter syntax:
 - `"exact-value"` → exact string match
 - `"/regex-pattern/"` → regex match (Go regexp syntax)
 
+Used by both `auth.jwt` (via proxy handler) and `admin.jwt` (via AdminAuthMiddleware).
+
 Example:
 ```toml
 [auth.jwt.filters]
 email_verified = "true"          # Exact match
 email = "/.*@example\\.com$/"   # Regex match
 roles = "admin"                  # Array: passes if "admin" in roles[]
+
+[admin.jwt.filters]
+hd = "yourcompany.com"          # Restrict admin to a Google Workspace domain
 ```
 
 #### Claim Mapping (internal/auth/jwt/mapper.go)
@@ -757,6 +824,70 @@ export PROXY_SECURITY_RATE_LIMIT_BAN_FOR_MIN=10
 
 ./bin/lite-auth-proxy
 ```
+
+### Example 4: Rate-Limit-Only Mode (no authentication)
+
+```toml
+[server]
+port = 8888
+target_url = "http://localhost:8080"
+
+[security.rate_limit]
+enabled = true
+requests_per_min = 60
+ban_for_min = 5
+
+[auth.jwt]
+enabled = false
+
+[auth.api_key]
+enabled = false
+```
+
+All requests on included paths are forwarded without credential checks.
+Rate limiting and DDoS hardening remain fully active.
+
+### Example 5: Admin Control Plane (domain-based access)
+
+```toml
+[admin]
+enabled = true
+
+[admin.jwt]
+issuer = "https://accounts.google.com"
+audience = "https://my-proxy.run.app"
+
+[admin.jwt.filters]
+hd = "yourcompany.com"   # Any user in the Google Workspace domain
+```
+
+### Example 6: Admin Control Plane (specific service accounts)
+
+```toml
+[admin]
+enabled = true
+
+[admin.jwt]
+issuer = "https://accounts.google.com"
+audience = "https://my-proxy.run.app"
+allowed_emails = [
+  "deploy-sa@my-project.iam.gserviceaccount.com",
+  "ops-sa@my-project.iam.gserviceaccount.com",
+]
+```
+
+### Example 7: auth.jwt with AllowedEmails
+
+```toml
+[auth.jwt]
+enabled = true
+issuer = "https://accounts.google.com"
+audience = "my-app-id"
+allowed_emails = ["alice@example.com", "bob@example.com"]
+```
+
+Only tokens whose `email` claim exactly matches a listed address are accepted.
+`filters` and `allowed_emails` are independent; both can be set simultaneously (AND logic).
 
 ## DEPENDENCIES
 - **github.com/BurntSushi/toml** v1.6.0: TOML parsing

@@ -283,6 +283,219 @@ func TestProxyHealthCheckProxyTarget(t *testing.T) {
 	}
 }
 
+// buildJWTServer creates a test JWKS server and returns the issuer URL plus a token builder.
+func buildJWTServer(t *testing.T) (issuer string, cleanup func(), builder func(claims map[string]string) string) {
+	t.Helper()
+	rsaKey, err := jwt.GenerateRSAKeyPair()
+	if err != nil {
+		t.Fatalf("failed to generate RSA key: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/openid-configuration":
+			cfg := oidcConfig{JWKSUri: "http://" + r.Host + "/jwks"}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(cfg)
+		case "/jwks":
+			jwks := jwksResponse{Keys: []jwt.JWK{{
+				KTy: "RSA", Kid: "test-key", Use: "sig", Alg: "RS256",
+				N: base64.RawURLEncoding.EncodeToString(rsaKey.N.Bytes()),
+				E: base64.RawURLEncoding.EncodeToString(big.NewInt(int64(rsaKey.E)).Bytes()),
+			}}}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(jwks)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+
+	iss := "http://" + srv.Listener.Addr().String()
+	return iss, srv.Close, func(extra map[string]string) string {
+		b := jwt.NewTokenBuilder("RS256", rsaKey, "test-key")
+		b.WithIssuer(iss).
+			WithAudience("test-aud").
+			WithIssuedAt(time.Now()).
+			WithExpiresAt(time.Now().Add(1 * time.Hour))
+		for k, v := range extra {
+			b.WithClaim(k, v)
+		}
+		tok, err := b.Build()
+		if err != nil {
+			t.Fatalf("failed to build token: %v", err)
+		}
+		return tok
+	}
+}
+
+func TestProxyJWTAllowedEmails_Match(t *testing.T) {
+	issuer, close, mkToken := buildJWTServer(t)
+	defer close()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{Port: 8888, TargetURL: upstream.URL, IncludePaths: []string{"/*"}},
+		Auth: config.AuthConfig{
+			HeaderPrefix: "X-AUTH-",
+			JWT: config.JWTConfig{
+				Enabled:       true,
+				Issuer:        issuer,
+				Audience:      "test-aud",
+				ToleranceSecs: 30,
+				CacheTTLMins:  60,
+				AllowedEmails: []string{"alice@company.com"},
+			},
+		},
+	}
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	h, err := NewHandler(cfg, logger)
+	if err != nil {
+		t.Fatalf("failed to create handler: %v", err)
+	}
+
+	token := mkToken(map[string]string{"sub": "alice", "email": "alice@company.com"})
+	req := httptest.NewRequest("GET", "http://proxy.local/resource", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp := httptest.NewRecorder()
+	h.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected 200 when email is in AllowedEmails, got %d", resp.Code)
+	}
+}
+
+func TestProxyJWTAllowedEmails_NoMatch(t *testing.T) {
+	issuer, close, mkToken := buildJWTServer(t)
+	defer close()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{Port: 8888, TargetURL: upstream.URL, IncludePaths: []string{"/*"}},
+		Auth: config.AuthConfig{
+			HeaderPrefix: "X-AUTH-",
+			JWT: config.JWTConfig{
+				Enabled:       true,
+				Issuer:        issuer,
+				Audience:      "test-aud",
+				ToleranceSecs: 30,
+				CacheTTLMins:  60,
+				AllowedEmails: []string{"alice@company.com"},
+			},
+		},
+	}
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	h, err := NewHandler(cfg, logger)
+	if err != nil {
+		t.Fatalf("failed to create handler: %v", err)
+	}
+
+	// Bob is not in the AllowedEmails list.
+	token := mkToken(map[string]string{"sub": "bob", "email": "bob@company.com"})
+	req := httptest.NewRequest("GET", "http://proxy.local/resource", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp := httptest.NewRecorder()
+	h.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 when email is not in AllowedEmails, got %d", resp.Code)
+	}
+}
+
+func TestProxyJWTAllowedEmails_Empty_NoRestriction(t *testing.T) {
+	// Empty AllowedEmails means no email restriction; any valid token passes.
+	issuer, close, mkToken := buildJWTServer(t)
+	defer close()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{Port: 8888, TargetURL: upstream.URL, IncludePaths: []string{"/*"}},
+		Auth: config.AuthConfig{
+			HeaderPrefix: "X-AUTH-",
+			JWT: config.JWTConfig{
+				Enabled:       true,
+				Issuer:        issuer,
+				Audience:      "test-aud",
+				ToleranceSecs: 30,
+				CacheTTLMins:  60,
+				AllowedEmails: nil, // no restriction
+			},
+		},
+	}
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	h, err := NewHandler(cfg, logger)
+	if err != nil {
+		t.Fatalf("failed to create handler: %v", err)
+	}
+
+	token := mkToken(map[string]string{"sub": "anyone", "email": "anyone@random.org"})
+	req := httptest.NewRequest("GET", "http://proxy.local/resource", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp := httptest.NewRecorder()
+	h.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected 200 when AllowedEmails is empty (no restriction), got %d", resp.Code)
+	}
+}
+
+func TestProxyRateLimitOnlyMode(t *testing.T) {
+	// When both JWT and API-Key are disabled, the proxy forwards all requests
+	// without credential checks (rate-limit-only mode).
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{
+			Port:         8888,
+			TargetURL:    upstream.URL,
+			IncludePaths: []string{"/*"},
+		},
+		Security: config.SecurityConfig{
+			RateLimit: config.RateLimitConfig{
+				Enabled:        true,
+				RequestsPerMin: 100,
+				BanForMin:      1,
+			},
+		},
+		Auth: config.AuthConfig{
+			HeaderPrefix: "X-AUTH-",
+			JWT:          config.JWTConfig{Enabled: false},
+			APIKey:       config.APIKeyConfig{Enabled: false},
+		},
+	}
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	h, err := NewHandler(cfg, logger)
+	if err != nil {
+		t.Fatalf("failed to create handler: %v", err)
+	}
+
+	// Request without any credentials should be forwarded
+	req := httptest.NewRequest("GET", "http://proxy.local/anything", nil)
+	resp := httptest.NewRecorder()
+	h.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected 200 in rate-limit-only mode, got %d", resp.Code)
+	}
+}
+
 func TestProxyJWTRateLimitingPerUser(t *testing.T) {
 	rsaKey, err := jwt.GenerateRSAKeyPair()
 	if err != nil {

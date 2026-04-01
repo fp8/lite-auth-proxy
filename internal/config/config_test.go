@@ -302,7 +302,8 @@ audience = "test"
 	}
 }
 
-func TestBothAuthMethodsDisabledError(t *testing.T) {
+func TestBothAuthMethodsDisabledAllowed(t *testing.T) {
+	// Both auth methods disabled is valid: proxy operates in rate-limit-only mode.
 	configContent := `
 [server]
 target_url = "http://localhost:8080"
@@ -315,13 +316,171 @@ enabled = false
 `
 
 	configPath := createTempConfig(t, configContent)
-	_, err := Load(configPath)
-	if err == nil {
-		t.Error("Expected error when both auth methods are disabled")
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Errorf("Expected no error when both auth methods disabled (rate-limit-only mode), got: %v", err)
 	}
-	expectedErr := "at least one authentication method (JWT or API-Key) must be enabled"
-	if err != nil && !strings.Contains(err.Error(), expectedErr) {
-		t.Errorf("Expected error containing %q, got %q", expectedErr, err.Error())
+	if cfg != nil && (cfg.Auth.JWT.Enabled || cfg.Auth.APIKey.Enabled) {
+		t.Error("Expected both auth methods to be disabled")
+	}
+}
+
+func TestAdminJWTConfig(t *testing.T) {
+	configContent := `
+[server]
+target_url = "http://localhost:8080"
+
+[auth.jwt]
+enabled = true
+issuer = "https://example.com"
+audience = "test"
+
+[admin]
+enabled = true
+
+[admin.jwt]
+issuer = "https://accounts.google.com"
+audience = "my-service-url"
+allowed_emails = ["sa@my-project.iam.gserviceaccount.com"]
+`
+
+	configPath := createTempConfig(t, configContent)
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Failed to load config: %v", err)
+	}
+
+	if !cfg.Admin.Enabled {
+		t.Error("Expected admin to be enabled")
+	}
+	if cfg.Admin.JWT.Issuer != "https://accounts.google.com" {
+		t.Errorf("Expected admin JWT issuer https://accounts.google.com, got %s", cfg.Admin.JWT.Issuer)
+	}
+	if cfg.Admin.JWT.Audience != "my-service-url" {
+		t.Errorf("Expected admin JWT audience my-service-url, got %s", cfg.Admin.JWT.Audience)
+	}
+	if len(cfg.Admin.JWT.AllowedEmails) != 1 || cfg.Admin.JWT.AllowedEmails[0] != "sa@my-project.iam.gserviceaccount.com" {
+		t.Errorf("Unexpected allowed_emails: %v", cfg.Admin.JWT.AllowedEmails)
+	}
+	if cfg.Admin.JWT.ToleranceSecs != 30 {
+		t.Errorf("Expected default admin JWT tolerance 30, got %d", cfg.Admin.JWT.ToleranceSecs)
+	}
+	if cfg.Admin.JWT.CacheTTLMins != 1440 {
+		t.Errorf("Expected default admin JWT cache TTL 1440, got %d", cfg.Admin.JWT.CacheTTLMins)
+	}
+}
+
+func TestAdminJWTValidationErrors(t *testing.T) {
+	tests := []struct {
+		name        string
+		config      string
+		expectedErr string
+	}{
+		{
+			name: "Missing admin JWT issuer",
+			config: `
+[server]
+target_url = "http://localhost:8080"
+
+[auth.jwt]
+enabled = true
+issuer = "https://example.com"
+audience = "test"
+
+[admin]
+enabled = true
+
+[admin.jwt]
+audience = "my-service"
+allowed_emails = ["sa@example.com"]
+`,
+			expectedErr: "admin JWT issuer is required",
+		},
+		{
+			name: "Missing admin JWT audience",
+			config: `
+[server]
+target_url = "http://localhost:8080"
+
+[auth.jwt]
+enabled = true
+issuer = "https://example.com"
+audience = "test"
+
+[admin]
+enabled = true
+
+[admin.jwt]
+issuer = "https://accounts.google.com"
+allowed_emails = ["sa@example.com"]
+`,
+			expectedErr: "admin JWT audience is required",
+		},
+		{
+			name: "Neither allowed_emails nor filters provided",
+			config: `
+[server]
+target_url = "http://localhost:8080"
+
+[auth.jwt]
+enabled = true
+issuer = "https://example.com"
+audience = "test"
+
+[admin]
+enabled = true
+
+[admin.jwt]
+issuer = "https://accounts.google.com"
+audience = "my-service"
+`,
+			expectedErr: "admin JWT requires at least one of allowed_emails or filters",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			configPath := createTempConfig(t, tt.config)
+			_, err := Load(configPath)
+			if err == nil {
+				t.Error("Expected validation error but got none")
+			}
+			if err != nil && !strings.Contains(err.Error(), tt.expectedErr) {
+				t.Errorf("Expected error containing %q, got %q", tt.expectedErr, err.Error())
+			}
+		})
+	}
+}
+
+func TestAdminJWTFiltersOnly(t *testing.T) {
+	// Filters alone (without allowed_emails) should pass validation.
+	configContent := `
+[server]
+target_url = "http://localhost:8080"
+
+[auth.jwt]
+enabled = true
+issuer = "https://example.com"
+audience = "test"
+
+[admin]
+enabled = true
+
+[admin.jwt]
+issuer = "https://accounts.google.com"
+audience = "my-service"
+
+[admin.jwt.filters]
+hd = "company.com"
+`
+
+	configPath := createTempConfig(t, configContent)
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Expected no error with filters-only admin config, got: %v", err)
+	}
+	if cfg.Admin.JWT.Filters["hd"] != "company.com" {
+		t.Errorf("Expected admin JWT filter hd=company.com, got %v", cfg.Admin.JWT.Filters)
 	}
 }
 

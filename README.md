@@ -12,6 +12,7 @@ lite-auth-proxy is a lightweight authentication proxy that sits in front of your
 ### Key Features
 
 - 🔐 **Dual Authentication**: JWT (JWKS auto-discovery) and API-Key authentication
+- 🔓 **Rate-Limit-Only Mode**: Disable both auth methods to forward all requests without credential checks — rate limiting still applies
 - 🚀 **High Performance**: Fast startup (<50ms), minimal memory (<32MB)
 - 🛡️ **Zero-Trust Security**: Header sanitization, claim-based access control
 - 🎯 **Rate Limiting**: Per-IP rate limiting with automatic ban mechanism
@@ -127,7 +128,51 @@ For a complete configuration reference, see the [Configuration Guide](docs/CONFI
 
 When `admin.enabled = true`, two additional endpoints are available for runtime traffic control without redeploying.
 
-Authentication uses **GCP service account identity tokens** (OIDC JWTs). The calling service account obtains an ID token from the GCP metadata server and passes it as `Authorization: Bearer <token>`.
+Authentication uses **GCP service account identity tokens** (OIDC JWTs). The calling service account obtains an ID token from the GCP metadata server and passes it as `Authorization: Bearer <token>`. Configure it in `[admin.jwt]` — this uses the same `JWTConfig` structure as `[auth.jwt]`.
+
+Access control requires **at least one** of:
+- `allowed_emails` — explicit whitelist of service account email addresses
+- `[admin.jwt.filters]` — claim-based rules (exact match or regex), e.g. restricting by hosted domain (`hd`)
+
+Both can be combined; when combined, **all** conditions must pass.
+
+**Example — specific service accounts only:**
+
+```toml
+[admin]
+enabled = true
+
+[admin.jwt]
+issuer = "https://accounts.google.com"
+audience = "https://your-proxy.run.app"
+allowed_emails = ["deploy-sa@my-project.iam.gserviceaccount.com"]
+```
+
+**Example — anyone in a Google Workspace domain:**
+
+```toml
+[admin]
+enabled = true
+
+[admin.jwt]
+issuer = "https://accounts.google.com"
+audience = "https://your-proxy.run.app"
+
+[admin.jwt.filters]
+hd = "yourcompany.com"
+```
+
+**Example — domain filter + specific email whitelist:**
+
+```toml
+[admin.jwt]
+issuer = "https://accounts.google.com"
+audience = "https://your-proxy.run.app"
+allowed_emails = ["ops-sa@yourcompany.com"]
+
+[admin.jwt.filters]
+hd = "yourcompany.com"
+```
 
 ### POST /admin/control
 
@@ -181,8 +226,9 @@ Validates JWT tokens from the `Authorization: Bearer <token>` header:
 
 - Automatic JWKS key discovery from OpenID Connect issuer
 - Signature validation using RS256/RS384/RS512 algorithms
-- Claim validation with exact match or regex patterns
-- Claim-to-header mapping for downstream services
+- Claim validation with exact match or regex patterns (`filters`)
+- Optional email allowlist (`allowed_emails`) for restricting access to specific identities
+- Claim-to-header mapping for downstream services (`mappings`)
 
 **Example configuration:**
 
@@ -193,15 +239,22 @@ issuer = "https://accounts.google.com"
 audience = "your-app-client-id"
 tolerance_secs = 30
 
+# Optional: reject tokens whose claims do not match (exact or /regex/)
 [auth.jwt.filters]
 email_verified = "true"
 email = "/.*@yourcompany\\.com$/"
 
+# Optional: restrict to an explicit list of email addresses
+# allowed_emails = ["alice@yourcompany.com", "bob@yourcompany.com"]
+
+# Map JWT claims to downstream X-AUTH-* headers
 [auth.jwt.mappings]
 email = "USER-EMAIL"
 sub = "USER-ID"
 roles = "USER-ROLES"
 ```
+
+`allowed_emails` and `filters` are both optional and independent. When both are set, **all** conditions must pass. When neither is set, any valid token is accepted.
 
 ### API-Key Authentication
 
@@ -219,6 +272,23 @@ source = "backend-job"
 ```
 
 Both JWT and API-Key authentication can be enabled simultaneously, allowing different authentication methods for different use cases.
+
+### Rate-Limit-Only Mode
+
+When both `auth.jwt.enabled` and `auth.api_key.enabled` are `false`, the proxy operates in **rate-limit-only mode**: all requests are forwarded to the upstream without credential checks. Rate limiting (and any admin dynamic rules) still applies. This is useful when you only need DDoS protection without authentication.
+
+```toml
+[auth.jwt]
+enabled = false
+
+[auth.api_key]
+enabled = false
+
+[security.rate_limit]
+enabled = true
+requests_per_min = 60
+ban_for_min = 5
+```
 
 ## Deployment
 
@@ -307,11 +377,13 @@ flowchart TD
     Step2 --> |Check include/exclude patterns|Step3[Dynamic Rule Check]
     Step3 --> |Admin throttle/block/allow rules|Step4[Vertex AI Rate Limit]
     Step4 --> |Per-caller Vertex AI bucket|Step5[Per-IP Rate Limiting]
-    Step5 --> |IP ban mechanism|Step6[Authentication]
-    Step6 --> |JWT token or API-Key validation|Step7[Claim Filtering]
-    Step7 --> |Validate JWT claims, exact match or regex|Step8[Header Injection]
-    Step8 --> |Map claims to X-AUTH-* headers|Step9[URL Rewriting]
-    Step9 --> |Strip prefix if configured|Backend([Backend Service])
+    Step5 --> |IP ban mechanism|Step6{Auth enabled?}
+    Step6 --> |Both JWT and API-Key disabled: rate-limit-only mode|Backend
+    Step6 --> |JWT or API-Key enabled|Step7[Authentication]
+    Step7 --> |JWT token or API-Key validation|Step8[Claim Filtering + Email Check]
+    Step8 --> |filters and/or allowed_emails|Step9[Header Injection]
+    Step9 --> |Map claims to X-AUTH-* headers|Step10[URL Rewriting]
+    Step10 --> |Strip prefix if configured|Backend([Backend Service])
 ```
 
 > **Admin API** (`/admin/control`, `/admin/status`) sits on the same mux but is handled before the pipeline. It is only registered when `admin.enabled = true`.
