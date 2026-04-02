@@ -61,6 +61,12 @@ func handleSetRule(w http.ResponseWriter, store *RuleStore, rateLimiters map[str
 	if rule.Action == "throttle" && rule.Limiter != "" {
 		if limiter, ok := rateLimiters[rule.Limiter]; ok {
 			limiter.SetRequestsPerMin(rule.MaxRPM)
+			if rule.ThrottleDelayMs > 0 {
+				limiter.SetThrottleDelay(time.Duration(rule.ThrottleDelayMs) * time.Millisecond)
+			}
+			if rule.MaxDelaySlots > 0 {
+				limiter.SetMaxDelaySlots(rule.MaxDelaySlots)
+			}
 			limiter.Enable()
 		}
 	}

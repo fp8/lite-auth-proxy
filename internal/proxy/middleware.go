@@ -182,8 +182,8 @@ func JwtRateLimit(limiter *ratelimit.RateLimiter, includeIP bool) Middleware {
 
 // handleRateLimited applies the optional throttle delay before writing a 429 response.
 func handleRateLimited(w http.ResponseWriter, retryAfter int, limiter *ratelimit.RateLimiter) {
-	if limiter.TryAcquireDelaySlot() {
-		defer limiter.ReleaseDelaySlot()
+	if acquired, sem := limiter.TryAcquireDelaySlot(); acquired {
+		defer limiter.ReleaseDelaySlot(sem)
 		time.Sleep(limiter.ThrottleDelay())
 	}
 	writeRateLimitResponse(w, retryAfter)

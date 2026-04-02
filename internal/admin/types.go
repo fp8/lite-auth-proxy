@@ -20,7 +20,9 @@ type Rule struct {
 	MaxRPM          int       `json:"maxRPM,omitempty"`
 	PathPattern     *string   `json:"pathPattern,omitempty"`
 	RateByKey       bool      `json:"rateByKey,omitempty"`
-	Limiter         string    `json:"limiter,omitempty"` // "ip", "apikey", or "jwt" — targets a specific rate limiter
+	Limiter         string    `json:"limiter,omitempty"`         // "ip", "apikey", or "jwt" — targets a specific rate limiter
+	ThrottleDelayMs int       `json:"throttleDelayMs,omitempty"` // optional: update the limiter's throttle delay (ms); 0 = no change
+	MaxDelaySlots   int       `json:"maxDelaySlots,omitempty"`   // optional: update max concurrent throttled responses; 0 = no change
 	DurationSeconds int       `json:"durationSeconds"`
 	ExpiresAt       time.Time `json:"-"`
 	currentRPM      atomic.Int64

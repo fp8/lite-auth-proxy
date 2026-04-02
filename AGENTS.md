@@ -248,6 +248,43 @@ Access control rules:
 - When both are set, **all** conditions must pass (AND logic)
 - Config validation requires at least one of `filters` or `allowed_emails` to be non-empty when `admin.enabled = true`
 
+### Admin Control Plane (internal/admin/handler.go)
+
+**POST /admin/control** — manage dynamic rules and rate limiter settings at runtime.
+
+Rule JSON fields:
+
+| Field | Type | Description |
+|---|---|---|
+| `ruleId` | string | Unique rule identifier (required) |
+| `targetHost` | string | Hostname this rule applies to (required) |
+| `action` | string | `throttle`, `block`, or `allow` (required) |
+| `maxRPM` | int | Max requests per minute — required for `throttle` |
+| `limiter` | string | Target rate limiter: `ip`, `apikey`, or `jwt` |
+| `throttleDelayMs` | int | Set throttle delay on the targeted limiter (ms); `0` = no change |
+| `maxDelaySlots` | int | Set max concurrent throttled responses on the targeted limiter; `0` = no change |
+| `pathPattern` | string | Optional path pattern filter for the rule |
+| `durationSeconds` | int | Rule active duration in seconds (required) |
+
+When `action = "throttle"` and `limiter` is set:
+1. `limiter.SetRequestsPerMin(maxRPM)` — update RPM
+2. If `throttleDelayMs > 0`: `limiter.SetThrottleDelay(throttleDelayMs * ms)` — enable/update delay
+3. If `maxDelaySlots > 0`: `limiter.SetMaxDelaySlots(maxDelaySlots)` — resize semaphore
+4. `limiter.Enable()` — ensure limiter is active
+
+**GET /admin/status** — returns all active rules and rate limiter snapshots:
+```json
+{
+  "rules": [...],
+  "rateLimiters": {
+    "ip":     {"name": "ip", "enabled": true, "requestsPerMin": 60, "activeEntries": 3},
+    "apikey": {"name": "apikey", "enabled": false, "requestsPerMin": 60, "activeEntries": 0},
+    "jwt":    {"name": "jwt", "enabled": true, "requestsPerMin": 30, "activeEntries": 12,
+               "throttleDelay": "200ms", "maxDelaySlots": 50}
+  }
+}
+```
+
 ### JWT Validation Logic (internal/auth/jwt/validator.go)
 
 #### ValidateToken(tokenString) → (Claims, error)
@@ -367,88 +404,126 @@ service = "internal"   # X-AUTH-SERVICE: internal
 source = "backend"     # X-AUTH-SOURCE: backend
 ```
 
-## RATE_LIMITING (internal/ratelimit/limiter.go)
+## RATE_LIMITING (internal/ratelimit/)
 
-### Algorithm: Sliding Window with Temporary Bans
-Per-key tracking with:
-- Window size: 1 minute (fixed)
-- Request limit: config.RequestsPerMin
-- Ban duration: config.BanForMin
-- Key composition: 
-  - For authenticated requests (JWT): hashed `IPv4+ ":" + sub_claim` (SHA256)
-  - For API-Key authenticated requests: IP address only
-  - For non-authenticated requests: IP address only
+### Architecture: Three Independent Limiters
+Rate limiting is handled by three purpose-specific middlewares, each backed by an independent `RateLimiter` instance:
 
-### Rate Limit Key Selection
-For corporate scenarios where multiple users share the same IP:
-- **JWT-authenticated requests**: Rate limit key is based on both IP and JWT `sub` (subject) claim
-  - Flow: IP + sub → SHA256 hash → 43-char base64url string key
-  - Allows: Different JWT users to have independent rate limits
-  - Example: Users A and B from same IP (e.g., corporate network) can each make RequestsPerMin requests
-  - Requires: JWT validation to succeed; rate limiting applied in handler after validation
-- **API-Key authenticated requests**: Rate limit key is IP-only (corporate service assumed to have stable IP)
-  - Flow: IP → rate limit check
-  - Example: Service at 10.0.0.5 limited to RequestsPerMin requests total
-- **Non-authenticated requests** (excluded paths, health checks): Rate limit key is IP-only
-  - Applied at middleware level before authentication
-  - Example: /healthz endpoint rate-limited by source IP
+| Middleware | Config section | Key composition | Scope |
+|---|---|---|---|
+| `IpRateLimit` | `[security.rate_limit]` | `ClientIP(r)` | All requests — DDoS protection layer |
+| `ApiKeyRateLimit` | `[security.apikey_rate_limit]` | `"k:" + hash(key)` or `ClientIP(r)` | Only matching requests (configurable rules) |
+| `JwtRateLimit` | `[security.jwt_rate_limit]` | `"s:" + sub` | Only requests with a Bearer JWT |
 
-### Allow(key string) → (allowed bool, retryAfterSeconds int)
+All three run **before** authentication. `JwtRateLimit` extracts the `sub` claim via a non-validating JWT parse so rate limiting happens before the expensive signature verification.
+
+### RateLimiter Core (internal/ratelimit/limiter.go)
+Algorithm: **Sliding window** per key with temporary bans.
+
+```go
+type RateLimiterConfig struct {
+    Name           string
+    Enabled        bool
+    RequestsPerMin int
+    BanDuration    time.Duration
+    ThrottleDelay  time.Duration // 0 = no delay (default)
+    MaxDelaySlots  int           // semaphore cap; default 100
+}
+```
+
+**Allow(key string) → (allowed bool, retryAfterSeconds int)**
 1. If not enabled or limit ≤ 0 → return true
 2. Get/create entry for key
-3. Check if key is currently banned → return false + retry-after
+3. If key is currently banned → return false + retry-after
 4. If window expired (≥60s since windowStart) → reset count, update windowStart
-5. Increment count
-6. If count > limit:
-   - Set bannedUntil = now + banDuration
-   - Return false + retry-after (rounded up to seconds)
-7. Return true
+5. Increment count; if count > limit → set ban, return false + retry-after
+6. Return true
 
-Cleanup:
-- Periodic (every 60s)
-- Remove entries: bannedUntil passed AND lastSeen > 2*window ago
-- Prevents memory leak from stale keys
+Cleanup: periodic (every 60s), removes entries idle for > 2 minutes and no active ban.
 
-### Memory Efficiency
-- JWT sub claim values can be arbitrarily long; hashing prevents unbounded memory growth
-- Hash function: SHA256(IP + ":" + sub_claim) → 32-byte output → 43-char base64url string
-- Base64url encoding chosen over hex (33% shorter: 43 vs 64 chars)
-- Key map size bounded by: (Number of IPs) × (Number of unique users per IP)
+### Key Composition
+
+**IpRateLimit:**
+- Key: `ClientIP(r)` — raw IP from `RemoteAddr` (no X-Forwarded-For processing)
+
+**ApiKeyRateLimit:**
+- Key source (in priority order):
+  1. `key_header` header value (default `x-goog-api-key`) → `"k:" + hash(value)`
+  2. `key` query parameter → `"k:" + hash(value)`
+  3. No key found → `ClientIP(r)` (fallback)
+- If `include_ip = true`: prefix key with `ClientIP(r) + ":"`
+- Hash function: SHA256(raw) → first 96 bits → 16-char base64url string
+- Request matching: only applies to requests where at least one `[[match]]` rule is satisfied (OR between rules, AND within a rule). If no rules configured → middleware is a passthrough.
+
+**JwtRateLimit:**
+- Key: `"s:" + sub` where `sub` is the JWT `sub` claim (non-validating parse)
+- If no Bearer token or no `sub` claim → passthrough
+- If `include_ip = true`: prefix key with `ClientIP(r) + ":"`
+
+### Throttle Delay (DDoS-Safe Backpressure)
+When `throttle_delay_ms > 0`, rate-limited responses are delayed before returning 429.
+A bounded semaphore (`delaySem chan struct{}`) limits concurrent sleeping goroutines to `max_delay_slots` (default 100). If all slots are occupied (DDoS scenario), the request returns 429 immediately without sleeping.
+
+```go
+// TryAcquireDelaySlot returns (acquired, semaphore).
+// Caller must pass the returned chan to ReleaseDelaySlot to handle
+// concurrent SetMaxDelaySlots calls correctly.
+if acquired, sem := limiter.TryAcquireDelaySlot(); acquired {
+    defer limiter.ReleaseDelaySlot(sem)
+    time.Sleep(limiter.ThrottleDelay())
+}
+```
+
+### Admin Runtime Methods
+All methods are thread-safe:
+
+| Method | Description |
+|---|---|
+| `SetRequestsPerMin(rpm int)` | Update RPM limit |
+| `SetThrottleDelay(d time.Duration)` | Enable/disable/update throttle delay; `0` = disable |
+| `SetMaxDelaySlots(n int)` | Resize the delay semaphore (takes effect immediately) |
+| `Enable()` / `Disable()` | Toggle rate limiting on/off |
+| `GetStatus() *RateLimiterStatus` | Snapshot for admin status endpoint |
+
+```go
+type RateLimiterStatus struct {
+    Name           string `json:"name"`
+    Enabled        bool   `json:"enabled"`
+    RequestsPerMin int    `json:"requestsPerMin"`
+    ActiveEntries  int    `json:"activeEntries"`
+    ThrottleDelay  string `json:"throttleDelay,omitempty"` // e.g. "100ms"
+    MaxDelaySlots  int    `json:"maxDelaySlots,omitempty"`
+}
+```
 
 Response on rate limit:
 - HTTP 429 Too Many Requests
 - Header: `Retry-After: <seconds>`
 - JSON: `{"error":"rate_limited","message":"too many requests","retry_after":123}`
 
-### Example Rate Limit Scenarios
-**Scenario 1: Corporate Network with JWT**
-```
-Config: rate_limit.requests_per_min = 100
+### ApiKeyRateLimit Request Matching (internal/ratelimit/matcher.go)
+`RequestMatcher` evaluates `[[security.apikey_rate_limit.match]]` rules.
 
-Corporate IP 10.0.0.0/24, 50 users, each with unique JWT sub
-
-User alice@corp.com (sub=alice):
-  - Rate limit key: sha256("10.0.0.5:alice")
-  - Limit: 100 req/min per alice (across all sessions)
-
-User bob@corp.com (sub=bob):
-  - Rate limit key: sha256("10.0.0.5:bob")
-  - Limit: 100 req/min per bob (across all sessions)
-
-Result: Both can make 100 req/min simultaneously, 50+ users × 100 req/min = 5000+ req/min total
+```go
+type RequestMatchRule struct {
+    Host   string // exact string or /regex/
+    Path   string // exact string or /regex/
+    Header string // header name that must be present
+}
 ```
 
-**Scenario 2: Corporate Network with API Key**
-```
-Config: rate_limit.requests_per_min = 10000
+- Multiple rules → **OR** logic (any match = matched)
+- Fields within a rule → **AND** logic (all non-empty fields must match)
+- Empty matcher (no rules) → `Matches()` returns false (middleware is a no-op)
+- Host/Path: `/pattern/` syntax → regex; bare string → exact match
 
-Corporate IP 10.0.0.0/24, single API key for all services:
+**Example (Vertex AI endpoints):**
+```toml
+[[security.apikey_rate_limit.match]]
+host = "/.*-aiplatform\\.googleapis\\.com/"
 
-All requests from corporate network:
-  - Rate limit key: "10.0.0.5" (IP only)
-  - Limit: 10000 req/min for entire corporate network
-
-Result: Total corporate traffic limited to 10000 req/min (no per-user distinction)
+[[security.apikey_rate_limit.match]]
+path = "/\\/v1\\/projects\\/.*\\/(endpoints|publishers|models)\\//"
 ```
 
 ## HTTP_REVERSE_PROXY (internal/proxy/proxy.go)
@@ -501,33 +576,43 @@ type Middleware func(http.Handler) http.Handler
    - Purpose: prevent header injection attacks
 3. Call next handler
 
-### RateLimiter Middleware
-Applies rate limiting to non-authenticated requests (excluded paths, health checks).
-For authenticated requests, rate limiting is deferred to the handler after auth validation.
+### IpRateLimit Middleware
+Applies per-IP rate limiting to **all** requests regardless of auth status. Provides the primary DDoS protection layer.
 
-For non-authenticated requests:
-1. Extract client IP from RemoteAddr
-2. Call limiter.Allow(ip) with IP-only key
-3. If not allowed:
-   - Return 429 JSON with retry_after
-   - Don't call next handler
-4. If allowed: call next handler
+1. Extract `ClientIP(r)` from `RemoteAddr` (no X-Forwarded-For processing)
+2. Call `ipLimiter.Allow(ip)` → if not allowed, call `handleRateLimited` → 429
+3. If allowed: call next handler
 
-**Note:** lite-auth-proxy is designed for direct exposure without upstream proxies. ClientIP extraction uses RemoteAddr only and does not process X-Forwarded-For headers. If deployed behind a reverse proxy/load balancer, the proxy must be configured to set RemoteAddr appropriately (e.g., using the PROXY protocol or similar mechanism).
+**Note:** ClientIP extraction uses RemoteAddr only. If deployed behind a load balancer, the proxy must set RemoteAddr via PROXY protocol or similar.
 
-### Handler-Based Rate Limiting (for authenticated requests)
-Applied in the request handler after JWT/API-Key validation succeeds:
+### ApiKeyRateLimit Middleware
+Applies per-API-key rate limiting **only to requests matching configured rules** (`[[security.apikey_rate_limit.match]]`). Passthrough if no rules match.
 
-**JWT Authentication:**
-- Extract `sub` claim from validated JWT token
-- Create hashed key: SHA256(IP + ":" + sub)
-- Call limiter.Allow(hashed_key)
-- Allows: Different JWT users from same IP to have independent rate limits
+1. Check `matcher.Matches(r)` — if false, passthrough
+2. Extract API key from `key_header` header or `key` query param
+3. Compute rate-limit key (`"k:" + hash(key)` or `ClientIP(r)` fallback)
+4. If `include_ip = true`: prefix with `ClientIP(r) + ":"`
+5. Call `apikeyLimiter.Allow(key)` → if not allowed, call `handleRateLimited` → 429
 
-**API-Key Authentication:**
-- Use IP-only key
-- Call limiter.Allow(ip)
-- All requests with same API key from same IP share the rate limit
+### JwtRateLimit Middleware
+Applies per-JWT-identity rate limiting using the `sub` claim. Runs **before** JWT validation to avoid wasting resources on expensive signature checks.
+
+1. Non-validating parse of Bearer token → extract `sub` claim
+2. If no Bearer token or no `sub` → passthrough
+3. Compute rate-limit key `"s:" + sub`; if `include_ip = true`, prefix with `ClientIP(r) + ":"`
+4. Call `jwtLimiter.Allow(key)` → if not allowed, call `handleRateLimited` → 429
+
+### handleRateLimited
+```go
+func handleRateLimited(w http.ResponseWriter, retryAfter int, limiter *ratelimit.RateLimiter) {
+    if acquired, sem := limiter.TryAcquireDelaySlot(); acquired {
+        defer limiter.ReleaseDelaySlot(sem)
+        time.Sleep(limiter.ThrottleDelay())
+    }
+    writeRateLimitResponse(w, retryAfter)
+}
+```
+The semaphore channel is returned from `TryAcquireDelaySlot` and passed to `ReleaseDelaySlot` to ensure the release targets the correct channel even if `SetMaxDelaySlots` replaces it at runtime.
 
 ### RequestLogger Middleware
 Logs every request with:

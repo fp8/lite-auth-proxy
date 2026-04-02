@@ -91,26 +91,30 @@ func TestRateLimiterThrottleDelay(t *testing.T) {
 	}
 
 	// Acquire two slots (max capacity)
-	if !limiter.TryAcquireDelaySlot() {
+	ok1, sem1 := limiter.TryAcquireDelaySlot()
+	if !ok1 {
 		t.Fatal("expected first slot to be acquired")
 	}
-	if !limiter.TryAcquireDelaySlot() {
+	ok2, sem2 := limiter.TryAcquireDelaySlot()
+	if !ok2 {
 		t.Fatal("expected second slot to be acquired")
 	}
 	// Third should fail (semaphore full)
-	if limiter.TryAcquireDelaySlot() {
+	ok3, _ := limiter.TryAcquireDelaySlot()
+	if ok3 {
 		t.Fatal("expected third slot acquisition to fail")
 	}
 
 	// Release one slot and try again
-	limiter.ReleaseDelaySlot()
-	if !limiter.TryAcquireDelaySlot() {
+	limiter.ReleaseDelaySlot(sem1)
+	ok4, sem4 := limiter.TryAcquireDelaySlot()
+	if !ok4 {
 		t.Fatal("expected slot to be acquired after release")
 	}
 
 	// Cleanup
-	limiter.ReleaseDelaySlot()
-	limiter.ReleaseDelaySlot()
+	limiter.ReleaseDelaySlot(sem2)
+	limiter.ReleaseDelaySlot(sem4)
 }
 
 func TestRateLimiterNoThrottleDelay(t *testing.T) {
@@ -121,8 +125,9 @@ func TestRateLimiterNoThrottleDelay(t *testing.T) {
 	if limiter.ThrottleDelay() != 0 {
 		t.Fatal("expected no throttle delay")
 	}
-	if limiter.TryAcquireDelaySlot() {
-		t.Fatal("expected TryAcquireDelaySlot to return false when delay is disabled")
+	ok, sem := limiter.TryAcquireDelaySlot()
+	if ok || sem != nil {
+		t.Fatal("expected TryAcquireDelaySlot to return false/nil when delay is disabled")
 	}
 }
 
@@ -158,5 +163,86 @@ func TestRateLimiterAdminMethods(t *testing.T) {
 	}
 	if ok, _ := limiter.Allow("key2"); ok {
 		t.Fatal("expected Allow to block after re-enable and exceeding limit")
+	}
+}
+
+func TestSetThrottleDelay(t *testing.T) {
+	// Start with no throttle
+	limiter := NewRateLimiter(RateLimiterConfig{
+		Name: "test", Enabled: true, RequestsPerMin: 1, BanDuration: time.Minute,
+	})
+
+	ok, _ := limiter.TryAcquireDelaySlot()
+	if ok {
+		t.Fatal("expected no slot available before SetThrottleDelay")
+	}
+
+	// Enable throttle
+	limiter.SetThrottleDelay(50 * time.Millisecond)
+	if limiter.ThrottleDelay() != 50*time.Millisecond {
+		t.Fatal("expected 50ms delay after SetThrottleDelay")
+	}
+	ok, sem := limiter.TryAcquireDelaySlot()
+	if !ok {
+		t.Fatal("expected slot available after SetThrottleDelay")
+	}
+	limiter.ReleaseDelaySlot(sem)
+
+	// Disable throttle
+	limiter.SetThrottleDelay(0)
+	if limiter.ThrottleDelay() != 0 {
+		t.Fatal("expected 0 delay after disabling throttle")
+	}
+	ok, _ = limiter.TryAcquireDelaySlot()
+	if ok {
+		t.Fatal("expected no slot available after throttle disabled")
+	}
+
+	// GetStatus should reflect disabled throttle
+	status := limiter.GetStatus()
+	if status.ThrottleDelay != "" {
+		t.Fatalf("expected empty ThrottleDelay in status, got %q", status.ThrottleDelay)
+	}
+}
+
+func TestSetMaxDelaySlots(t *testing.T) {
+	limiter := NewRateLimiter(RateLimiterConfig{
+		Name: "test", Enabled: true, RequestsPerMin: 1, BanDuration: time.Minute,
+		ThrottleDelay: 10 * time.Millisecond, MaxDelaySlots: 2,
+	})
+
+	// Resize to 3 slots
+	limiter.SetMaxDelaySlots(3)
+
+	ok1, sem1 := limiter.TryAcquireDelaySlot()
+	ok2, sem2 := limiter.TryAcquireDelaySlot()
+	ok3, sem3 := limiter.TryAcquireDelaySlot()
+	if !ok1 || !ok2 || !ok3 {
+		t.Fatal("expected 3 slots after SetMaxDelaySlots(3)")
+	}
+	// Fourth should fail
+	ok4, _ := limiter.TryAcquireDelaySlot()
+	if ok4 {
+		t.Fatal("expected fourth slot to fail after SetMaxDelaySlots(3)")
+	}
+
+	limiter.ReleaseDelaySlot(sem1)
+	limiter.ReleaseDelaySlot(sem2)
+	limiter.ReleaseDelaySlot(sem3)
+
+	// Status should reflect new max
+	status := limiter.GetStatus()
+	if status.MaxDelaySlots != 3 {
+		t.Fatalf("expected MaxDelaySlots=3 in status, got %d", status.MaxDelaySlots)
+	}
+
+	// SetMaxDelaySlots when throttle is disabled should not create a semaphore
+	limiter2 := NewRateLimiter(RateLimiterConfig{
+		Name: "test2", Enabled: true, RequestsPerMin: 1, BanDuration: time.Minute,
+	})
+	limiter2.SetMaxDelaySlots(5) // throttle off — semaphore should remain nil
+	ok, _ := limiter2.TryAcquireDelaySlot()
+	if ok {
+		t.Fatal("expected no slot when throttle is disabled, even after SetMaxDelaySlots")
 	}
 }

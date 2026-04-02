@@ -23,6 +23,7 @@ type RateLimiterStatus struct {
 	RequestsPerMin int    `json:"requestsPerMin"`
 	ActiveEntries  int    `json:"activeEntries"`
 	ThrottleDelay  string `json:"throttleDelay,omitempty"` // e.g. "100ms"
+	MaxDelaySlots  int    `json:"maxDelaySlots,omitempty"` // 0 when throttle is disabled
 }
 
 // RateLimiter enforces per-key rate limits with temporary bans and
@@ -40,6 +41,7 @@ type RateLimiter struct {
 	lastCleanup     time.Time
 
 	throttleDelay time.Duration
+	maxDelaySlots int
 	delaySem      chan struct{} // bounded semaphore for DDoS-safe delay
 }
 
@@ -77,6 +79,7 @@ func newRateLimiterWithClock(cfg RateLimiterConfig, now func() time.Time) *RateL
 		entries:         make(map[string]*entry),
 		lastCleanup:     now(),
 		throttleDelay:   cfg.ThrottleDelay,
+		maxDelaySlots:   maxSlots,
 		delaySem:        sem,
 	}
 }
@@ -127,29 +130,38 @@ func (l *RateLimiter) Name() string {
 
 // ThrottleDelay returns the configured throttle delay duration.
 func (l *RateLimiter) ThrottleDelay() time.Duration {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	return l.throttleDelay
 }
 
 // TryAcquireDelaySlot attempts to acquire a delay slot without blocking.
-// Returns false if no delay is configured or all slots are occupied (DDoS scenario).
-func (l *RateLimiter) TryAcquireDelaySlot() bool {
-	if l.delaySem == nil {
-		return false
+// Returns (false, nil) if no delay is configured or all slots are occupied (DDoS scenario).
+// The caller MUST pass the returned channel to ReleaseDelaySlot to ensure correct
+// release even if the semaphore is replaced by SetMaxDelaySlots at runtime.
+func (l *RateLimiter) TryAcquireDelaySlot() (bool, chan struct{}) {
+	l.mu.Lock()
+	sem := l.delaySem
+	l.mu.Unlock()
+
+	if sem == nil {
+		return false, nil
 	}
 	select {
-	case l.delaySem <- struct{}{}:
-		return true
+	case sem <- struct{}{}:
+		return true, sem
 	default:
-		return false
+		return false, nil
 	}
 }
 
-// ReleaseDelaySlot releases a previously acquired delay slot.
-func (l *RateLimiter) ReleaseDelaySlot() {
-	if l.delaySem == nil {
+// ReleaseDelaySlot releases a delay slot acquired by TryAcquireDelaySlot.
+// The sem argument must be the channel returned by TryAcquireDelaySlot.
+func (l *RateLimiter) ReleaseDelaySlot(sem chan struct{}) {
+	if sem == nil {
 		return
 	}
-	<-l.delaySem
+	<-sem
 }
 
 // SetRequestsPerMin updates the rate limit at runtime (admin control).
@@ -157,6 +169,39 @@ func (l *RateLimiter) SetRequestsPerMin(rpm int) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.requestsPerMin = rpm
+}
+
+// SetThrottleDelay updates the throttle delay at runtime (admin control).
+// Set to 0 to disable throttling. When enabling throttle on a limiter that had
+// none, a new semaphore is created using the current MaxDelaySlots value.
+func (l *RateLimiter) SetThrottleDelay(delay time.Duration) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.throttleDelay = delay
+	if delay > 0 && l.delaySem == nil {
+		slots := l.maxDelaySlots
+		if slots <= 0 {
+			slots = 100
+		}
+		l.delaySem = make(chan struct{}, slots)
+	} else if delay == 0 {
+		l.delaySem = nil
+	}
+}
+
+// SetMaxDelaySlots updates the maximum number of concurrent throttled responses
+// at runtime (admin control). A new semaphore is created immediately if throttle
+// is active; in-flight goroutines release via the channel returned by TryAcquireDelaySlot.
+func (l *RateLimiter) SetMaxDelaySlots(slots int) {
+	if slots <= 0 {
+		slots = 100
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.maxDelaySlots = slots
+	if l.delaySem != nil {
+		l.delaySem = make(chan struct{}, slots)
+	}
 }
 
 // Enable turns on rate limiting.
@@ -186,6 +231,7 @@ func (l *RateLimiter) GetStatus() *RateLimiterStatus {
 	}
 	if l.throttleDelay > 0 {
 		status.ThrottleDelay = l.throttleDelay.String()
+		status.MaxDelaySlots = l.maxDelaySlots
 	}
 	return status
 }
