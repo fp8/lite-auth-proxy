@@ -117,13 +117,25 @@ header_prefix = "X-AUTH-"
 
 ### JWT Authentication
 
+**Minimum configuration** (`issuer` and `audience` are the only required fields):
+
 ```toml
 [auth.jwt]
-enabled = true
-issuer = "https://securetoken.google.com/{{ENV.GOOGLE_CLOUD_PROJECT}}"
-audience = "{{ENV.GOOGLE_CLOUD_PROJECT}}"
+enabled  = true
+issuer   = "https://securetoken.google.com/my-project"
+audience = "my-project"
+```
+
+All available fields:
+
+```toml
+[auth.jwt]
+enabled        = true
+issuer         = "https://securetoken.google.com/{{ENV.GOOGLE_CLOUD_PROJECT}}"
+audience       = "{{ENV.GOOGLE_CLOUD_PROJECT}}"
 tolerance_secs = 30
 cache_ttl_mins = 1440
+allowed_emails = []   # optional — empty means no email restriction
 ```
 
 | Field | Type | Default | ENV Variable | Description |
@@ -133,6 +145,7 @@ cache_ttl_mins = 1440
 | `audience` | string | **required if enabled** | `PROXY_AUTH_JWT_AUDIENCE` | Expected JWT audience claim |
 | `tolerance_secs` | integer | `30` | `PROXY_AUTH_JWT_TOLERANCE_SECS` | Clock skew tolerance for `exp` and `nbf` validation (seconds) |
 | `cache_ttl_mins` | integer | `1440` | `PROXY_AUTH_JWT_CACHE_TTL_MINS` | JWKS public key cache TTL (minutes, default 24 hours) |
+| `allowed_emails` | array[string] | `[]` | `PROXY_AUTH_JWT_ALLOWED_EMAILS` | Allowlist of email addresses; empty means no restriction (any valid token passes) |
 
 **JWT Validation Process:**
 1. Extract JWT from `Authorization: Bearer <token>` header
@@ -400,10 +413,6 @@ audience = "my-app-id"
 
 [auth.jwt.filters]
 email_verified = "true"
-
-[auth.jwt.mappings]
-email = "USER-EMAIL"
-sub = "USER-ID"
 ```
 
 ### Example 2: API-Key Authentication
@@ -452,6 +461,32 @@ value = "{{ENV.API_KEY_SECRET}}"
 
 The admin API enables runtime traffic control (throttle, block, allow) without redeploying. It is **disabled by default** and has zero overhead when off.
 
+**Minimum configuration** (`issuer`, `audience`, and at least one of `allowed_emails` or `filters` are required):
+
+```toml
+# Option A — restrict by email
+[admin]
+enabled = true
+
+[admin.jwt]
+issuer         = "https://accounts.google.com"
+audience       = "https://your-proxy.run.app"
+allowed_emails = ["sa@my-project.iam.gserviceaccount.com"]
+
+# Option B — restrict by claim (e.g. Google Workspace hosted domain)
+[admin]
+enabled = true
+
+[admin.jwt]
+issuer   = "https://accounts.google.com"
+audience = "https://your-proxy.run.app"
+
+[admin.jwt.filters]
+hd = "your-domain.com"
+```
+
+All available fields:
+
 ```toml
 [admin]
 enabled = false   # Set to true to register /admin/* routes
@@ -462,6 +497,11 @@ audience      = "https://your-proxy.run.app"   # The proxy's own Cloud Run URL
 allowed_emails = [
   "sg-killswitch@your-project.iam.gserviceaccount.com",
 ]
+
+# Alternative: restrict by arbitrary JWT claim instead of (or in addition to) allowed_emails
+[admin.jwt.filters]
+# email = "admin@example.com"
+# hd    = "your-domain.com"
 ```
 
 | Field | Type | Default | ENV Variable | Description |
@@ -470,8 +510,13 @@ allowed_emails = [
 | `admin.jwt.issuer` | string | `"https://accounts.google.com"` | `PROXY_ADMIN_JWT_ISSUER` | Expected OIDC issuer for admin identity tokens |
 | `admin.jwt.audience` | string | — | `PROXY_ADMIN_JWT_AUDIENCE` | Expected audience — set to the proxy's own Cloud Run URL |
 | `admin.jwt.allowed_emails` | array[string] | `[]` | `PROXY_ADMIN_JWT_ALLOWED_EMAILS` | Comma-separated list of service account emails allowed to call the admin API |
+| `admin.jwt.filters` | map[string]string | `{}` | — | Require specific JWT claim values (e.g. `hd = "corp.com"`). At least one of `allowed_emails` or `filters` is required when admin is enabled |
+| `admin.jwt.tolerance_secs` | integer | `30` | `PROXY_ADMIN_JWT_TOLERANCE_SECS` | Clock skew tolerance for admin token validation |
+| `admin.jwt.cache_ttl_mins` | integer | `1440` | `PROXY_ADMIN_JWT_CACHE_TTL_MINS` | How long to cache validated admin tokens (minutes) |
 
-**Authentication model:** Admin callers obtain a GCP service account identity token (ID token) with the proxy's Cloud Run URL as the audience. The proxy validates this token against Google's OIDC JWKS endpoint (same infrastructure as the main auth pipeline) and checks the `email` claim against `allowed_emails`. No additional secrets are needed.
+**Authentication model:** Admin callers obtain a GCP service account identity token (ID token) with the proxy's Cloud Run URL as the audience. The proxy validates this token against Google's OIDC JWKS endpoint (same infrastructure as the main auth pipeline) and checks the `email` claim against `allowed_emails` and/or any `filters` claim requirements. No additional secrets are needed.
+
+**Access control:** at least one of `allowed_emails` or `filters` must be set when `admin.enabled = true`. Both can be used together — the token must satisfy all configured checks.
 
 ### Startup Rule Persistence
 

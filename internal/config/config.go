@@ -372,6 +372,9 @@ func applyEnvOverrides(config *Config) error {
 		}
 		config.Auth.JWT.CacheTTLMins = cacheTTL
 	}
+	if val := os.Getenv("PROXY_AUTH_JWT_ALLOWED_EMAILS"); val != "" {
+		config.Auth.JWT.AllowedEmails = splitCSV(val)
+	}
 	config.Auth.JWT.Filters = applyJWTMapOverrides("PROXY_AUTH_JWT_FILTERS_", config.Auth.JWT.Filters)
 	config.Auth.JWT.Mappings = applyJWTMapOverrides("PROXY_AUTH_JWT_MAPPINGS_", config.Auth.JWT.Mappings)
 

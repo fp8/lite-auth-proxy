@@ -89,10 +89,10 @@ enabled = false                                # Enable the admin control-plane 
 [admin.jwt]
 # GCP service account identity tokens (Google OIDC) are used to authenticate admin requests.
 issuer = "https://accounts.google.com"         # Identity token issuer
-audience = "{{ENV.GOOGLE_CLOUD_PROJECT}}"      # Expected audience (typically the service URL)
+audience = "32555940559.apps.googleusercontent.com" # Expected audience for Google ID Token
 tolerance_secs = 30                            # Clock skew tolerance
 cache_ttl_mins = 1440                          # JWKS key cache TTL (24 hours)
-allowed_emails = []                            # Required: list of authorised service account emails
+# allowed_emails = []                          # List of authorised service account emails
                                                # Example: ["sa@my-project.iam.gserviceaccount.com"]
 
 [admin.jwt.filters]

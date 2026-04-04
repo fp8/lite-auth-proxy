@@ -255,6 +255,36 @@ value = "secret"
 	}
 }
 
+func TestEnvVarAllowedEmailsOverride(t *testing.T) {
+	_ = os.Setenv("PROXY_AUTH_JWT_ALLOWED_EMAILS", "alice@example.com,bob@example.com, carol@example.com")
+	defer func() { _ = os.Unsetenv("PROXY_AUTH_JWT_ALLOWED_EMAILS") }()
+
+	configContent := `
+[server]
+target_url = "http://localhost:8080"
+
+[auth.jwt]
+enabled = true
+issuer = "https://example.com"
+audience = "test"
+`
+	configPath := createTempConfig(t, configContent)
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Failed to load config: %v", err)
+	}
+
+	want := []string{"alice@example.com", "bob@example.com", "carol@example.com"}
+	if len(cfg.Auth.JWT.AllowedEmails) != len(want) {
+		t.Fatalf("Expected %d allowed_emails, got %d: %v", len(want), len(cfg.Auth.JWT.AllowedEmails), cfg.Auth.JWT.AllowedEmails)
+	}
+	for i, email := range want {
+		if cfg.Auth.JWT.AllowedEmails[i] != email {
+			t.Errorf("allowed_emails[%d]: expected %q, got %q", i, email, cfg.Auth.JWT.AllowedEmails[i])
+		}
+	}
+}
+
 func TestDefaultValues(t *testing.T) {
 	configContent := `
 [server]
@@ -647,5 +677,203 @@ audience = "test"
 				t.Errorf("Expected health check target %s, got %s", tt.expectedTarget, cfg.Server.HealthCheck.Target)
 			}
 		})
+	}
+}
+
+// TestEnvVarOverridesComplete verifies that every PROXY_* env var is wired up and applied.
+func TestEnvVarOverridesComplete(t *testing.T) {
+	envs := map[string]string{
+		// Server
+		"PROXY_SERVER_STRIP_PREFIX":          "/api",
+		"PROXY_SERVER_SHUTDOWN_TIMEOUT_SECS": "20",
+		"PROXY_SERVER_HEALTH_CHECK_PATH":     "/ping",
+		"PROXY_SERVER_HEALTH_CHECK_TARGET":   "http://healthz-backend:9090",
+		// Security — IP rate limit
+		"PROXY_SECURITY_RATE_LIMIT_REQUESTS_PER_MIN": "42",
+		"PROXY_SECURITY_RATE_LIMIT_THROTTLE_DELAY_MS": "250",
+		"PROXY_SECURITY_RATE_LIMIT_MAX_DELAY_SLOTS":   "50",
+		// Security — API-key rate limit
+		"PROXY_SECURITY_APIKEY_RATE_LIMIT_ENABLED":          "true",
+		"PROXY_SECURITY_APIKEY_RATE_LIMIT_REQUESTS_PER_MIN": "30",
+		"PROXY_SECURITY_APIKEY_RATE_LIMIT_BAN_FOR_MIN":      "10",
+		"PROXY_SECURITY_APIKEY_RATE_LIMIT_INCLUDE_IP":       "true",
+		"PROXY_SECURITY_APIKEY_RATE_LIMIT_KEY_HEADER":       "x-my-api-key",
+		"PROXY_SECURITY_APIKEY_RATE_LIMIT_THROTTLE_DELAY_MS": "100",
+		"PROXY_SECURITY_APIKEY_RATE_LIMIT_MAX_DELAY_SLOTS":   "25",
+		// Security — JWT rate limit
+		"PROXY_SECURITY_JWT_RATE_LIMIT_ENABLED":          "true",
+		"PROXY_SECURITY_JWT_RATE_LIMIT_REQUESTS_PER_MIN": "20",
+		"PROXY_SECURITY_JWT_RATE_LIMIT_BAN_FOR_MIN":      "15",
+		"PROXY_SECURITY_JWT_RATE_LIMIT_INCLUDE_IP":       "true",
+		"PROXY_SECURITY_JWT_RATE_LIMIT_THROTTLE_DELAY_MS": "75",
+		"PROXY_SECURITY_JWT_RATE_LIMIT_MAX_DELAY_SLOTS":   "10",
+		// Security — misc
+		"PROXY_SECURITY_MAX_BODY_BYTES": "2097152",
+		// Auth — common
+		"PROXY_AUTH_HEADER_PREFIX": "X-CUSTOM-",
+		// Auth — JWT
+		"PROXY_AUTH_JWT_ENABLED":        "true",
+		"PROXY_AUTH_JWT_ISSUER":         "https://override-issuer.example.com",
+		"PROXY_AUTH_JWT_AUDIENCE":       "override-audience",
+		"PROXY_AUTH_JWT_MAPPINGS_EMAIL": "USER-EMAIL",
+		// Auth — API key
+		"PROXY_AUTH_API_KEY_ENABLED": "true",
+		"PROXY_AUTH_API_KEY_NAME":    "X-Override-Key",
+		"PROXY_AUTH_API_KEY_VALUE":   "override-secret",
+		// Admin
+		"PROXY_ADMIN_ENABLED":            "true",
+		"PROXY_ADMIN_JWT_ISSUER":         "https://accounts.google.com",
+		"PROXY_ADMIN_JWT_AUDIENCE":       "https://my-proxy.run.app",
+		"PROXY_ADMIN_JWT_ALLOWED_EMAILS": "admin@example.com,ops@example.com",
+	}
+	for k, v := range envs {
+		_ = os.Setenv(k, v)
+	}
+	defer func() {
+		for k := range envs {
+			_ = os.Unsetenv(k)
+		}
+	}()
+
+	configContent := `
+[server]
+target_url = "http://localhost:8080"
+
+[security.rate_limit]
+enabled = true
+
+[auth.jwt]
+enabled = true
+issuer = "https://example.com"
+audience = "test"
+
+[auth.api_key]
+enabled = true
+name = "X-API-KEY"
+value = "secret"
+`
+	configPath := createTempConfig(t, configContent)
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Failed to load config: %v", err)
+	}
+
+	// Server
+	if cfg.Server.StripPrefix != "/api" {
+		t.Errorf("PROXY_SERVER_STRIP_PREFIX: got %q", cfg.Server.StripPrefix)
+	}
+	if cfg.Server.ShutdownTimeoutSecs != 20 {
+		t.Errorf("PROXY_SERVER_SHUTDOWN_TIMEOUT_SECS: got %d", cfg.Server.ShutdownTimeoutSecs)
+	}
+	if cfg.Server.HealthCheck.Path != "/ping" {
+		t.Errorf("PROXY_SERVER_HEALTH_CHECK_PATH: got %q", cfg.Server.HealthCheck.Path)
+	}
+	if cfg.Server.HealthCheck.Target != "http://healthz-backend:9090" {
+		t.Errorf("PROXY_SERVER_HEALTH_CHECK_TARGET: got %q", cfg.Server.HealthCheck.Target)
+	}
+
+	// Security — IP rate limit
+	if cfg.Security.RateLimit.RequestsPerMin != 42 {
+		t.Errorf("PROXY_SECURITY_RATE_LIMIT_REQUESTS_PER_MIN: got %d", cfg.Security.RateLimit.RequestsPerMin)
+	}
+	if cfg.Security.RateLimit.ThrottleDelayMs != 250 {
+		t.Errorf("PROXY_SECURITY_RATE_LIMIT_THROTTLE_DELAY_MS: got %d", cfg.Security.RateLimit.ThrottleDelayMs)
+	}
+	if cfg.Security.RateLimit.MaxDelaySlots != 50 {
+		t.Errorf("PROXY_SECURITY_RATE_LIMIT_MAX_DELAY_SLOTS: got %d", cfg.Security.RateLimit.MaxDelaySlots)
+	}
+
+	// Security — API-key rate limit
+	if !cfg.Security.ApiKeyRateLimit.Enabled {
+		t.Error("PROXY_SECURITY_APIKEY_RATE_LIMIT_ENABLED: got false")
+	}
+	if cfg.Security.ApiKeyRateLimit.RequestsPerMin != 30 {
+		t.Errorf("PROXY_SECURITY_APIKEY_RATE_LIMIT_REQUESTS_PER_MIN: got %d", cfg.Security.ApiKeyRateLimit.RequestsPerMin)
+	}
+	if cfg.Security.ApiKeyRateLimit.BanForMin != 10 {
+		t.Errorf("PROXY_SECURITY_APIKEY_RATE_LIMIT_BAN_FOR_MIN: got %d", cfg.Security.ApiKeyRateLimit.BanForMin)
+	}
+	if !cfg.Security.ApiKeyRateLimit.IncludeIP {
+		t.Error("PROXY_SECURITY_APIKEY_RATE_LIMIT_INCLUDE_IP: got false")
+	}
+	if cfg.Security.ApiKeyRateLimit.KeyHeader != "x-my-api-key" {
+		t.Errorf("PROXY_SECURITY_APIKEY_RATE_LIMIT_KEY_HEADER: got %q", cfg.Security.ApiKeyRateLimit.KeyHeader)
+	}
+	if cfg.Security.ApiKeyRateLimit.ThrottleDelayMs != 100 {
+		t.Errorf("PROXY_SECURITY_APIKEY_RATE_LIMIT_THROTTLE_DELAY_MS: got %d", cfg.Security.ApiKeyRateLimit.ThrottleDelayMs)
+	}
+	if cfg.Security.ApiKeyRateLimit.MaxDelaySlots != 25 {
+		t.Errorf("PROXY_SECURITY_APIKEY_RATE_LIMIT_MAX_DELAY_SLOTS: got %d", cfg.Security.ApiKeyRateLimit.MaxDelaySlots)
+	}
+
+	// Security — JWT rate limit
+	if !cfg.Security.JwtRateLimit.Enabled {
+		t.Error("PROXY_SECURITY_JWT_RATE_LIMIT_ENABLED: got false")
+	}
+	if cfg.Security.JwtRateLimit.RequestsPerMin != 20 {
+		t.Errorf("PROXY_SECURITY_JWT_RATE_LIMIT_REQUESTS_PER_MIN: got %d", cfg.Security.JwtRateLimit.RequestsPerMin)
+	}
+	if cfg.Security.JwtRateLimit.BanForMin != 15 {
+		t.Errorf("PROXY_SECURITY_JWT_RATE_LIMIT_BAN_FOR_MIN: got %d", cfg.Security.JwtRateLimit.BanForMin)
+	}
+	if !cfg.Security.JwtRateLimit.IncludeIP {
+		t.Error("PROXY_SECURITY_JWT_RATE_LIMIT_INCLUDE_IP: got false")
+	}
+	if cfg.Security.JwtRateLimit.ThrottleDelayMs != 75 {
+		t.Errorf("PROXY_SECURITY_JWT_RATE_LIMIT_THROTTLE_DELAY_MS: got %d", cfg.Security.JwtRateLimit.ThrottleDelayMs)
+	}
+	if cfg.Security.JwtRateLimit.MaxDelaySlots != 10 {
+		t.Errorf("PROXY_SECURITY_JWT_RATE_LIMIT_MAX_DELAY_SLOTS: got %d", cfg.Security.JwtRateLimit.MaxDelaySlots)
+	}
+
+	// Security — misc
+	if cfg.Security.MaxBodyBytes != 2097152 {
+		t.Errorf("PROXY_SECURITY_MAX_BODY_BYTES: got %d", cfg.Security.MaxBodyBytes)
+	}
+
+	// Auth — common
+	if cfg.Auth.HeaderPrefix != "X-CUSTOM-" {
+		t.Errorf("PROXY_AUTH_HEADER_PREFIX: got %q", cfg.Auth.HeaderPrefix)
+	}
+
+	// Auth — JWT
+	if !cfg.Auth.JWT.Enabled {
+		t.Error("PROXY_AUTH_JWT_ENABLED: got false")
+	}
+	if cfg.Auth.JWT.Issuer != "https://override-issuer.example.com" {
+		t.Errorf("PROXY_AUTH_JWT_ISSUER: got %q", cfg.Auth.JWT.Issuer)
+	}
+	if cfg.Auth.JWT.Audience != "override-audience" {
+		t.Errorf("PROXY_AUTH_JWT_AUDIENCE: got %q", cfg.Auth.JWT.Audience)
+	}
+	if cfg.Auth.JWT.Mappings["email"] != "USER-EMAIL" {
+		t.Errorf("PROXY_AUTH_JWT_MAPPINGS_EMAIL: got %q", cfg.Auth.JWT.Mappings["email"])
+	}
+
+	// Auth — API key
+	if !cfg.Auth.APIKey.Enabled {
+		t.Error("PROXY_AUTH_API_KEY_ENABLED: got false")
+	}
+	if cfg.Auth.APIKey.Name != "X-Override-Key" {
+		t.Errorf("PROXY_AUTH_API_KEY_NAME: got %q", cfg.Auth.APIKey.Name)
+	}
+	if cfg.Auth.APIKey.Value != "override-secret" {
+		t.Errorf("PROXY_AUTH_API_KEY_VALUE: got %q", cfg.Auth.APIKey.Value)
+	}
+
+	// Admin
+	if !cfg.Admin.Enabled {
+		t.Error("PROXY_ADMIN_ENABLED: got false")
+	}
+	if cfg.Admin.JWT.Issuer != "https://accounts.google.com" {
+		t.Errorf("PROXY_ADMIN_JWT_ISSUER: got %q", cfg.Admin.JWT.Issuer)
+	}
+	if cfg.Admin.JWT.Audience != "https://my-proxy.run.app" {
+		t.Errorf("PROXY_ADMIN_JWT_AUDIENCE: got %q", cfg.Admin.JWT.Audience)
+	}
+	if len(cfg.Admin.JWT.AllowedEmails) != 2 ||
+		cfg.Admin.JWT.AllowedEmails[0] != "admin@example.com" ||
+		cfg.Admin.JWT.AllowedEmails[1] != "ops@example.com" {
+		t.Errorf("PROXY_ADMIN_JWT_ALLOWED_EMAILS: got %v", cfg.Admin.JWT.AllowedEmails)
 	}
 }
