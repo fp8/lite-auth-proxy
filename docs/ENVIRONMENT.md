@@ -34,16 +34,47 @@ export PROXY_SERVER_STRIP_PREFIX=/api
 
 ### Security Configuration
 
+#### Per-IP Rate Limiting
+
 | Variable | Type | Default | Description |
 |----------|------|---------|-------------|
-| `PROXY_SECURITY_RATE_LIMIT_ENABLED` | boolean | `false` | Enable rate limiting |
+| `PROXY_SECURITY_RATE_LIMIT_ENABLED` | boolean | `false` | Enable per-IP rate limiting |
 | `PROXY_SECURITY_RATE_LIMIT_REQUESTS_PER_MIN` | integer | `60` | Max requests per IP per minute |
-| `PROXY_SECURITY_RATE_LIMIT_BAN_FOR_MIN` | integer | `5` | Ban duration when limit exceeded |
+| `PROXY_SECURITY_RATE_LIMIT_BAN_FOR_MIN` | integer | `5` | Ban duration when limit exceeded (minutes) |
+| `PROXY_SECURITY_RATE_LIMIT_SKIP_IF_JWT_IDENTIFIED` | boolean | `true` | Skip IP rate limit when a JWT sub claim is present |
+| `PROXY_SECURITY_RATE_LIMIT_THROTTLE_DELAY_MS` | integer | `0` | Delay before 429 response (ms); `0` = disabled |
+| `PROXY_SECURITY_RATE_LIMIT_MAX_DELAY_SLOTS` | integer | `100` | Max concurrent throttled responses |
+| `PROXY_SECURITY_MAX_BODY_BYTES` | integer | `1048576` | Max request body size in bytes (1 MiB default) |
+
+#### Per-API-Key Rate Limiting
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `PROXY_SECURITY_APIKEY_RATE_LIMIT_ENABLED` | boolean | `false` | Enable per-API-key rate limiting |
+| `PROXY_SECURITY_APIKEY_RATE_LIMIT_REQUESTS_PER_MIN` | integer | `60` | Max requests per key per minute |
+| `PROXY_SECURITY_APIKEY_RATE_LIMIT_BAN_FOR_MIN` | integer | `5` | Ban duration (minutes) |
+| `PROXY_SECURITY_APIKEY_RATE_LIMIT_INCLUDE_IP` | boolean | `false` | Prefix rate-limit key with client IP |
+| `PROXY_SECURITY_APIKEY_RATE_LIMIT_KEY_HEADER` | string | `"x-goog-api-key"` | Header to extract API key from |
+| `PROXY_SECURITY_APIKEY_RATE_LIMIT_THROTTLE_DELAY_MS` | integer | `0` | Delay before 429 response (ms) |
+| `PROXY_SECURITY_APIKEY_RATE_LIMIT_MAX_DELAY_SLOTS` | integer | `100` | Max concurrent throttled responses |
+
+#### Per-JWT Rate Limiting
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `PROXY_SECURITY_JWT_RATE_LIMIT_ENABLED` | boolean | `false` | Enable per-JWT rate limiting |
+| `PROXY_SECURITY_JWT_RATE_LIMIT_REQUESTS_PER_MIN` | integer | `60` | Max requests per JWT `sub` per minute |
+| `PROXY_SECURITY_JWT_RATE_LIMIT_BAN_FOR_MIN` | integer | `5` | Ban duration (minutes) |
+| `PROXY_SECURITY_JWT_RATE_LIMIT_INCLUDE_IP` | boolean | `false` | Prefix rate-limit key with client IP |
+| `PROXY_SECURITY_JWT_RATE_LIMIT_THROTTLE_DELAY_MS` | integer | `0` | Delay before 429 response (ms) |
+| `PROXY_SECURITY_JWT_RATE_LIMIT_MAX_DELAY_SLOTS` | integer | `100` | Max concurrent throttled responses |
 
 **Example:**
 ```bash
 export PROXY_SECURITY_RATE_LIMIT_ENABLED=true
 export PROXY_SECURITY_RATE_LIMIT_REQUESTS_PER_MIN=100
+export PROXY_SECURITY_APIKEY_RATE_LIMIT_ENABLED=true
+export PROXY_SECURITY_APIKEY_RATE_LIMIT_KEY_HEADER=x-goog-api-key
 ```
 
 ### Authentication Configuration
@@ -86,6 +117,51 @@ export PROXY_AUTH_API_KEY_ENABLED=true
 export PROXY_AUTH_API_KEY_NAME=X-API-KEY
 export PROXY_AUTH_API_KEY_VALUE=my-secret-key-123
 ```
+
+### Admin Control-Plane
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `PROXY_ADMIN_ENABLED` | boolean | `false` | Register `/admin/control` and `/admin/status` routes |
+| `PROXY_ADMIN_JWT_ISSUER` | string | `"https://accounts.google.com"` | OIDC issuer for admin identity tokens |
+| `PROXY_ADMIN_JWT_AUDIENCE` | string | - | Expected audience — set to the proxy's own Cloud Run URL |
+| `PROXY_ADMIN_JWT_ALLOWED_EMAILS` | string (CSV) | - | Comma-separated service account emails allowed to call the admin API |
+| `PROXY_THROTTLE_RULES` | JSON string | - | Persisted throttle rules loaded on startup (see below) |
+
+**Example:**
+```bash
+export PROXY_ADMIN_ENABLED=true
+export PROXY_ADMIN_JWT_AUDIENCE=https://my-proxy-abc123.run.app
+export PROXY_ADMIN_JWT_ALLOWED_EMAILS=sg-killswitch@my-project.iam.gserviceaccount.com
+```
+
+#### PROXY_THROTTLE_RULES
+
+A JSON array of rule objects pre-loaded into the rule store before the proxy begins serving traffic. Used to survive Cloud Run instance restarts without waiting for the next ShockGuard cycle.
+
+```bash
+export PROXY_THROTTLE_RULES='[
+  {
+    "ruleId":          "sg-throttle-vertex",
+    "targetHost":      "-aiplatform.googleapis.com",
+    "action":          "throttle",
+    "maxRPM":          200,
+    "pathPattern":     "/v1/projects/",
+    "rateByKey":       true,
+    "expiresAt":       "2026-03-30T15:10:00Z"
+  }
+]'
+```
+
+| Rule Field | Type | Required | Description |
+|------------|------|----------|-------------|
+| `ruleId` | string | yes | Unique identifier |
+| `targetHost` | string | yes | Exact `Host` header value to match |
+| `action` | string | yes | `throttle`, `block`, or `allow` |
+| `maxRPM` | integer | when throttle | Max requests per minute |
+| `pathPattern` | string | no | Path prefix to restrict the rule |
+| `rateByKey` | boolean | no | Per-caller-identity mode (default `false` = global) |
+| `expiresAt` | string | yes | Absolute RFC 3339 expiry; past values are silently skipped |
 
 ## Configuration File Substitution Variables
 
@@ -326,4 +402,4 @@ See [Development Guide](DEVELOPMENT.md#real-world-jwt-tests-firebase) for detail
 
 - [Configuration Guide](CONFIGURATION.md)
 - [Development Guide](DEVELOPMENT.md)
-- [Deployment Guide](Deployment.md)
+- [Deployment Guide](DEPLOYMENT.md)

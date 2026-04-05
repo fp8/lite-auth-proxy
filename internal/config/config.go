@@ -17,6 +17,13 @@ type Config struct {
 	Server   ServerConfig   `toml:"server"`
 	Security SecurityConfig `toml:"security"`
 	Auth     AuthConfig     `toml:"auth"`
+	Admin    AdminConfig    `toml:"admin"`
+}
+
+// AdminConfig contains settings for the dynamic control-plane API.
+type AdminConfig struct {
+	Enabled bool      `toml:"enabled"`
+	JWT     JWTConfig `toml:"jwt"`
 }
 
 // ServerConfig contains HTTP server and proxy settings
@@ -38,14 +45,50 @@ type HealthCheck struct {
 
 // SecurityConfig contains security-related settings
 type SecurityConfig struct {
-	RateLimit RateLimitConfig `toml:"rate_limit"`
+	RateLimit       RateLimitConfig       `toml:"rate_limit"`
+	ApiKeyRateLimit ApiKeyRateLimitConfig `toml:"apikey_rate_limit"`
+	JwtRateLimit    JwtRateLimitConfig    `toml:"jwt_rate_limit"`
+	MaxBodyBytes    int64                 `toml:"max_body_bytes"`
 }
 
-// RateLimitConfig contains rate limiting settings
+// RateLimitConfig contains IP-based rate limiting settings
 type RateLimitConfig struct {
-	Enabled        bool `toml:"enabled"`
-	RequestsPerMin int  `toml:"requests_per_min"`
-	BanForMin      int  `toml:"ban_for_min"`
+	Enabled              bool  `toml:"enabled"`
+	RequestsPerMin       int   `toml:"requests_per_min"`
+	BanForMin            int   `toml:"ban_for_min"`
+	ThrottleDelayMs      int   `toml:"throttle_delay_ms"`
+	MaxDelaySlots        int   `toml:"max_delay_slots"`
+	SkipIfJwtIdentified  *bool `toml:"skip_if_jwt_identified"`
+}
+
+// MatchRule defines a request matching rule for rate-limit targeting.
+// All non-empty fields within a rule must match (AND logic).
+type MatchRule struct {
+	Host   string `toml:"host"`   // exact string or /regex/
+	Path   string `toml:"path"`   // exact string or /regex/
+	Header string `toml:"header"` // header name that must be present
+}
+
+// ApiKeyRateLimitConfig contains API-key-based rate limiting settings.
+type ApiKeyRateLimitConfig struct {
+	Enabled         bool        `toml:"enabled"`
+	RequestsPerMin  int         `toml:"requests_per_min"`
+	BanForMin       int         `toml:"ban_for_min"`
+	IncludeIP       bool        `toml:"include_ip"`
+	KeyHeader       string      `toml:"key_header"`
+	Match           []MatchRule `toml:"match"`
+	ThrottleDelayMs int         `toml:"throttle_delay_ms"`
+	MaxDelaySlots   int         `toml:"max_delay_slots"`
+}
+
+// JwtRateLimitConfig contains JWT-based rate limiting settings.
+type JwtRateLimitConfig struct {
+	Enabled         bool `toml:"enabled"`
+	RequestsPerMin  int  `toml:"requests_per_min"`
+	BanForMin       int  `toml:"ban_for_min"`
+	IncludeIP       bool `toml:"include_ip"`
+	ThrottleDelayMs int  `toml:"throttle_delay_ms"`
+	MaxDelaySlots   int  `toml:"max_delay_slots"`
 }
 
 // AuthConfig contains authentication settings
@@ -55,7 +98,9 @@ type AuthConfig struct {
 	APIKey       APIKeyConfig `toml:"api_key"`
 }
 
-// JWTConfig contains JWT authentication settings
+// JWTConfig contains JWT authentication settings.
+// Used for both the main auth path (auth.jwt) and the admin control-plane (admin.jwt).
+// AllowedEmails is only used for admin.jwt to restrict access to specific identities.
 type JWTConfig struct {
 	Enabled       bool              `toml:"enabled"`
 	Issuer        string            `toml:"issuer"`
@@ -64,6 +109,7 @@ type JWTConfig struct {
 	CacheTTLMins  int               `toml:"cache_ttl_mins"`
 	Filters       map[string]string `toml:"filters"`
 	Mappings      map[string]string `toml:"mappings"`
+	AllowedEmails []string          `toml:"allowed_emails"`
 }
 
 // APIKeyConfig contains API key authentication settings
@@ -180,6 +226,126 @@ func applyEnvOverrides(config *Config) error {
 		}
 		config.Security.RateLimit.BanForMin = ban
 	}
+	if val := os.Getenv("PROXY_SECURITY_RATE_LIMIT_THROTTLE_DELAY_MS"); val != "" {
+		delay, err := strconv.Atoi(val)
+		if err != nil {
+			return fmt.Errorf("invalid PROXY_SECURITY_RATE_LIMIT_THROTTLE_DELAY_MS: %w", err)
+		}
+		config.Security.RateLimit.ThrottleDelayMs = delay
+	}
+	if val := os.Getenv("PROXY_SECURITY_RATE_LIMIT_MAX_DELAY_SLOTS"); val != "" {
+		slots, err := strconv.Atoi(val)
+		if err != nil {
+			return fmt.Errorf("invalid PROXY_SECURITY_RATE_LIMIT_MAX_DELAY_SLOTS: %w", err)
+		}
+		config.Security.RateLimit.MaxDelaySlots = slots
+	}
+	if val := os.Getenv("PROXY_SECURITY_RATE_LIMIT_SKIP_IF_JWT_IDENTIFIED"); val != "" {
+		skip, err := strconv.ParseBool(val)
+		if err != nil {
+			return fmt.Errorf("invalid PROXY_SECURITY_RATE_LIMIT_SKIP_IF_JWT_IDENTIFIED: %w", err)
+		}
+		config.Security.RateLimit.SkipIfJwtIdentified = &skip
+	}
+
+	// API key rate limit overrides
+	if val := os.Getenv("PROXY_SECURITY_APIKEY_RATE_LIMIT_ENABLED"); val != "" {
+		enabled, err := strconv.ParseBool(val)
+		if err != nil {
+			return fmt.Errorf("invalid PROXY_SECURITY_APIKEY_RATE_LIMIT_ENABLED: %w", err)
+		}
+		config.Security.ApiKeyRateLimit.Enabled = enabled
+	}
+	if val := os.Getenv("PROXY_SECURITY_APIKEY_RATE_LIMIT_REQUESTS_PER_MIN"); val != "" {
+		rpm, err := strconv.Atoi(val)
+		if err != nil {
+			return fmt.Errorf("invalid PROXY_SECURITY_APIKEY_RATE_LIMIT_REQUESTS_PER_MIN: %w", err)
+		}
+		config.Security.ApiKeyRateLimit.RequestsPerMin = rpm
+	}
+	if val := os.Getenv("PROXY_SECURITY_APIKEY_RATE_LIMIT_BAN_FOR_MIN"); val != "" {
+		ban, err := strconv.Atoi(val)
+		if err != nil {
+			return fmt.Errorf("invalid PROXY_SECURITY_APIKEY_RATE_LIMIT_BAN_FOR_MIN: %w", err)
+		}
+		config.Security.ApiKeyRateLimit.BanForMin = ban
+	}
+	if val := os.Getenv("PROXY_SECURITY_APIKEY_RATE_LIMIT_INCLUDE_IP"); val != "" {
+		include, err := strconv.ParseBool(val)
+		if err != nil {
+			return fmt.Errorf("invalid PROXY_SECURITY_APIKEY_RATE_LIMIT_INCLUDE_IP: %w", err)
+		}
+		config.Security.ApiKeyRateLimit.IncludeIP = include
+	}
+	if val := os.Getenv("PROXY_SECURITY_APIKEY_RATE_LIMIT_KEY_HEADER"); val != "" {
+		config.Security.ApiKeyRateLimit.KeyHeader = val
+	}
+	if val := os.Getenv("PROXY_SECURITY_APIKEY_RATE_LIMIT_THROTTLE_DELAY_MS"); val != "" {
+		delay, err := strconv.Atoi(val)
+		if err != nil {
+			return fmt.Errorf("invalid PROXY_SECURITY_APIKEY_RATE_LIMIT_THROTTLE_DELAY_MS: %w", err)
+		}
+		config.Security.ApiKeyRateLimit.ThrottleDelayMs = delay
+	}
+	if val := os.Getenv("PROXY_SECURITY_APIKEY_RATE_LIMIT_MAX_DELAY_SLOTS"); val != "" {
+		slots, err := strconv.Atoi(val)
+		if err != nil {
+			return fmt.Errorf("invalid PROXY_SECURITY_APIKEY_RATE_LIMIT_MAX_DELAY_SLOTS: %w", err)
+		}
+		config.Security.ApiKeyRateLimit.MaxDelaySlots = slots
+	}
+
+	// JWT rate limit overrides
+	if val := os.Getenv("PROXY_SECURITY_JWT_RATE_LIMIT_ENABLED"); val != "" {
+		enabled, err := strconv.ParseBool(val)
+		if err != nil {
+			return fmt.Errorf("invalid PROXY_SECURITY_JWT_RATE_LIMIT_ENABLED: %w", err)
+		}
+		config.Security.JwtRateLimit.Enabled = enabled
+	}
+	if val := os.Getenv("PROXY_SECURITY_JWT_RATE_LIMIT_REQUESTS_PER_MIN"); val != "" {
+		rpm, err := strconv.Atoi(val)
+		if err != nil {
+			return fmt.Errorf("invalid PROXY_SECURITY_JWT_RATE_LIMIT_REQUESTS_PER_MIN: %w", err)
+		}
+		config.Security.JwtRateLimit.RequestsPerMin = rpm
+	}
+	if val := os.Getenv("PROXY_SECURITY_JWT_RATE_LIMIT_BAN_FOR_MIN"); val != "" {
+		ban, err := strconv.Atoi(val)
+		if err != nil {
+			return fmt.Errorf("invalid PROXY_SECURITY_JWT_RATE_LIMIT_BAN_FOR_MIN: %w", err)
+		}
+		config.Security.JwtRateLimit.BanForMin = ban
+	}
+	if val := os.Getenv("PROXY_SECURITY_JWT_RATE_LIMIT_INCLUDE_IP"); val != "" {
+		include, err := strconv.ParseBool(val)
+		if err != nil {
+			return fmt.Errorf("invalid PROXY_SECURITY_JWT_RATE_LIMIT_INCLUDE_IP: %w", err)
+		}
+		config.Security.JwtRateLimit.IncludeIP = include
+	}
+	if val := os.Getenv("PROXY_SECURITY_JWT_RATE_LIMIT_THROTTLE_DELAY_MS"); val != "" {
+		delay, err := strconv.Atoi(val)
+		if err != nil {
+			return fmt.Errorf("invalid PROXY_SECURITY_JWT_RATE_LIMIT_THROTTLE_DELAY_MS: %w", err)
+		}
+		config.Security.JwtRateLimit.ThrottleDelayMs = delay
+	}
+	if val := os.Getenv("PROXY_SECURITY_JWT_RATE_LIMIT_MAX_DELAY_SLOTS"); val != "" {
+		slots, err := strconv.Atoi(val)
+		if err != nil {
+			return fmt.Errorf("invalid PROXY_SECURITY_JWT_RATE_LIMIT_MAX_DELAY_SLOTS: %w", err)
+		}
+		config.Security.JwtRateLimit.MaxDelaySlots = slots
+	}
+
+	if val := os.Getenv("PROXY_SECURITY_MAX_BODY_BYTES"); val != "" {
+		maxBody, err := strconv.ParseInt(val, 10, 64)
+		if err != nil {
+			return fmt.Errorf("invalid PROXY_SECURITY_MAX_BODY_BYTES: %w", err)
+		}
+		config.Security.MaxBodyBytes = maxBody
+	}
 
 	// Auth overrides
 	if val := os.Getenv("PROXY_AUTH_HEADER_PREFIX"); val != "" {
@@ -214,6 +380,9 @@ func applyEnvOverrides(config *Config) error {
 		}
 		config.Auth.JWT.CacheTTLMins = cacheTTL
 	}
+	if val := os.Getenv("PROXY_AUTH_JWT_ALLOWED_EMAILS"); val != "" {
+		config.Auth.JWT.AllowedEmails = splitCSV(val)
+	}
 	config.Auth.JWT.Filters = applyJWTMapOverrides("PROXY_AUTH_JWT_FILTERS_", config.Auth.JWT.Filters)
 	config.Auth.JWT.Mappings = applyJWTMapOverrides("PROXY_AUTH_JWT_MAPPINGS_", config.Auth.JWT.Mappings)
 
@@ -232,6 +401,24 @@ func applyEnvOverrides(config *Config) error {
 		config.Auth.APIKey.Value = substituteEnvVars(val)
 	}
 	config.Auth.APIKey.Payload = applyJWTMapOverrides("PROXY_AUTH_API_KEY_PAYLOAD_", config.Auth.APIKey.Payload)
+
+	// Admin overrides
+	if val := os.Getenv("PROXY_ADMIN_ENABLED"); val != "" {
+		enabled, err := strconv.ParseBool(val)
+		if err != nil {
+			return fmt.Errorf("invalid PROXY_ADMIN_ENABLED: %w", err)
+		}
+		config.Admin.Enabled = enabled
+	}
+	if val := os.Getenv("PROXY_ADMIN_JWT_ISSUER"); val != "" {
+		config.Admin.JWT.Issuer = val
+	}
+	if val := os.Getenv("PROXY_ADMIN_JWT_AUDIENCE"); val != "" {
+		config.Admin.JWT.Audience = val
+	}
+	if val := os.Getenv("PROXY_ADMIN_JWT_ALLOWED_EMAILS"); val != "" {
+		config.Admin.JWT.AllowedEmails = splitCSV(val)
+	}
 
 	return nil
 }
@@ -290,12 +477,49 @@ func setDefaults(config *Config) {
 		config.Server.IncludePaths = []string{"/*"}
 	}
 
-	// Security defaults
+	// Security defaults — IP rate limit
 	if config.Security.RateLimit.RequestsPerMin == 0 {
 		config.Security.RateLimit.RequestsPerMin = 60
 	}
 	if config.Security.RateLimit.BanForMin == 0 {
 		config.Security.RateLimit.BanForMin = 5
+	}
+	// ThrottleDelayMs defaults to 0 (off)
+	if config.Security.RateLimit.MaxDelaySlots == 0 {
+		config.Security.RateLimit.MaxDelaySlots = 100
+	}
+	if config.Security.RateLimit.SkipIfJwtIdentified == nil {
+		defaultTrue := true
+		config.Security.RateLimit.SkipIfJwtIdentified = &defaultTrue
+	}
+
+	// Security defaults — API key rate limit
+	if config.Security.ApiKeyRateLimit.RequestsPerMin == 0 {
+		config.Security.ApiKeyRateLimit.RequestsPerMin = 60
+	}
+	if config.Security.ApiKeyRateLimit.BanForMin == 0 {
+		config.Security.ApiKeyRateLimit.BanForMin = 5
+	}
+	if config.Security.ApiKeyRateLimit.KeyHeader == "" {
+		config.Security.ApiKeyRateLimit.KeyHeader = "x-goog-api-key"
+	}
+	if config.Security.ApiKeyRateLimit.MaxDelaySlots == 0 {
+		config.Security.ApiKeyRateLimit.MaxDelaySlots = 100
+	}
+
+	// Security defaults — JWT rate limit
+	if config.Security.JwtRateLimit.RequestsPerMin == 0 {
+		config.Security.JwtRateLimit.RequestsPerMin = 60
+	}
+	if config.Security.JwtRateLimit.BanForMin == 0 {
+		config.Security.JwtRateLimit.BanForMin = 5
+	}
+	if config.Security.JwtRateLimit.MaxDelaySlots == 0 {
+		config.Security.JwtRateLimit.MaxDelaySlots = 100
+	}
+
+	if config.Security.MaxBodyBytes == 0 {
+		config.Security.MaxBodyBytes = 1 << 20 // 1 MiB
 	}
 
 	// Auth defaults
@@ -309,6 +533,16 @@ func setDefaults(config *Config) {
 	}
 	if config.Auth.JWT.CacheTTLMins == 0 {
 		config.Auth.JWT.CacheTTLMins = 1440 // 24 hours
+	}
+
+	// Admin JWT defaults
+	if config.Admin.Enabled {
+		if config.Admin.JWT.ToleranceSecs == 0 {
+			config.Admin.JWT.ToleranceSecs = 30
+		}
+		if config.Admin.JWT.CacheTTLMins == 0 {
+			config.Admin.JWT.CacheTTLMins = 1440 // 24 hours
+		}
 	}
 
 	// API Key defaults
@@ -367,11 +601,6 @@ func fetchGCPProjectID() string {
 
 // validate checks that the configuration is valid
 func validate(config *Config) error {
-	// At least one auth method must be enabled
-	if !config.Auth.JWT.Enabled && !config.Auth.APIKey.Enabled {
-		return fmt.Errorf("at least one authentication method (JWT or API-Key) must be enabled")
-	}
-
 	// JWT validation
 	if config.Auth.JWT.Enabled {
 		if config.Auth.JWT.Issuer == "" {
@@ -397,6 +626,19 @@ func validate(config *Config) error {
 		// Check if placeholders are still present
 		if strings.Contains(config.Auth.APIKey.Value, "{{ENV.") {
 			return fmt.Errorf("unresolved environment variable in API key value")
+		}
+	}
+
+	// Admin JWT validation
+	if config.Admin.Enabled {
+		if config.Admin.JWT.Issuer == "" {
+			return fmt.Errorf("admin JWT issuer is required when admin API is enabled")
+		}
+		if config.Admin.JWT.Audience == "" {
+			return fmt.Errorf("admin JWT audience is required when admin API is enabled")
+		}
+		if len(config.Admin.JWT.AllowedEmails) == 0 && len(config.Admin.JWT.Filters) == 0 {
+			return fmt.Errorf("admin JWT requires at least one of allowed_emails or filters when admin API is enabled")
 		}
 	}
 

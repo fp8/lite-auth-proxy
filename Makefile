@@ -11,7 +11,7 @@ VERSION=dev
 MAJOR_MINOR=$(shell echo $(VERSION) | cut -d. -f1,2)
 BINARY_NAME=lite-auth-proxy
 BUILD_DIR=bin
-CONFIG_PATH=configs/config.toml
+CONFIG_PATH=config/config.toml
 GO=go
 GOFLAGS=-v
 LDFLAGS=-ldflags "-s -w -X main.Version=$(VERSION)"

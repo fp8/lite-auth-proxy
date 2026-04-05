@@ -14,17 +14,20 @@ High-performance Go-based reverse proxy with JWT/API-key authentication for serv
 ## KEY_CAPABILITIES
 - **JWT Authentication**: OpenID Connect compliant with automatic JWKS discovery
 - **API-Key Authentication**: Independent authentication method with constant-time comparison
+- **Rate-Limit-Only Mode**: Both auth methods can be disabled; requests are forwarded without credential checks while rate limiting still applies
 - **Claim Filtering**: Exact and regex pattern matching on JWT claims for fine-grained access control
+- **Email Allowlist**: Optional `allowed_emails` list on both `auth.jwt` and `admin.jwt`; empty list means no restriction
 - **Claim Mapping**: Transform JWT claims to HTTP headers for downstream services
-- **Rate Limiting**: Per-IP sliding window with configurable limits and bans
+- **Unified Rate Limiting**: Per-IP, per-API-key, and per-JWT rate limiting with configurable request matching, automatic bans, and optional DDoS-safe throttle delay
 - **Header Injection**: Inject authentication context as headers to downstream services
 - **Header Sanitization**: Prevent header injection attacks by removing incoming auth headers
 - **Health Checks**: Local or proxied health endpoints for orchestration compatibility
+- **Admin Control Plane**: Runtime throttle/block/allow rules via `/admin/control` with `limiter` field to target specific rate limiters (`ip`, `apikey`, `jwt`)
 
 ## CONFIGURATION_SYSTEM
 
 ### Config Loading Flow
-1. Read TOML file from `-config` flag (default: configs/config.toml)
+1. Read TOML file from `-config` flag (default: /config/config.toml)
 2. Substitute `{{ENV.VARIABLE_NAME}}` placeholders with env vars
 3. Parse TOML into Config struct (github.com/BurntSushi/toml)
 4. Apply `PROXY_*` environment variable overrides
@@ -38,6 +41,7 @@ type Config struct {
     Server   ServerConfig
     Security SecurityConfig
     Auth     AuthConfig
+    Admin    AdminConfig
 }
 
 type ServerConfig struct {
@@ -56,13 +60,45 @@ type HealthCheck struct {
 }
 
 type SecurityConfig struct {
-    RateLimit RateLimitConfig
+    RateLimit       RateLimitConfig
+    ApiKeyRateLimit ApiKeyRateLimitConfig
+    JwtRateLimit    JwtRateLimitConfig
+    MaxBodyBytes    int64           // 1 MiB default
 }
 
 type RateLimitConfig struct {
-    Enabled        bool  // false default
-    RequestsPerMin int   // 60 default
-    BanForMin      int   // 5 default
+    Enabled              bool  // false default
+    RequestsPerMin       int   // 60 default
+    BanForMin            int   // 5 default
+    ThrottleDelayMs      int   // 0 default (disabled)
+    MaxDelaySlots        int   // 100 default
+    SkipIfJwtIdentified  *bool // true default (nil treated as true)
+}
+
+type ApiKeyRateLimitConfig struct {
+    Enabled         bool               // false default
+    RequestsPerMin  int                // 60 default
+    BanForMin       int                // 5 default
+    IncludeIP       bool               // false default — prefix key with client IP
+    KeyHeader       string             // "x-goog-api-key" default
+    Match           []MatchRule        // Request matching rules (OR between rules, AND within)
+    ThrottleDelayMs int                // 0 default
+    MaxDelaySlots   int                // 100 default
+}
+
+type JwtRateLimitConfig struct {
+    Enabled         bool  // false default
+    RequestsPerMin  int   // 60 default
+    BanForMin       int   // 5 default
+    IncludeIP       bool  // false default — prefix key with client IP
+    ThrottleDelayMs int   // 0 default
+    MaxDelaySlots   int   // 100 default
+}
+
+type MatchRule struct {
+    Host   string  // exact or /regex/
+    Path   string  // exact or /regex/
+    Header string  // header name that must be present
 }
 
 type AuthConfig struct {
@@ -71,21 +107,35 @@ type AuthConfig struct {
     APIKey       APIKeyConfig
 }
 
+// JWTConfig is shared by both [auth.jwt] and [admin.jwt].
+// AllowedEmails is only enforced when non-empty; an empty slice means no
+// email restriction. At least one of AllowedEmails or Filters must be
+// non-empty when used for admin.jwt.
 type JWTConfig struct {
-    Enabled      bool                // false default
-    Issuer       string              // Required if enabled
-    Audience     string              // Required if enabled
+    Enabled       bool                // false default
+    Issuer        string              // Required if enabled
+    Audience      string              // Required if enabled
     ToleranceSecs int                 // 30 default
-    CacheTTLMins int                 // 1440 (24h) default
-    Filters      map[string]string   // Claim validation rules
-    Mappings     map[string]string   // Claim→Header mappings
+    CacheTTLMins  int                 // 1440 (24h) default
+    Filters       map[string]string   // Claim validation rules (exact or /regex/)
+    Mappings      map[string]string   // Claim→Header mappings (auth.jwt only)
+    AllowedEmails []string            // Optional email allowlist; empty = no restriction
 }
 
 type APIKeyConfig struct {
     Enabled bool              // false default
     Name    string            // "X-API-KEY" default
     Value   string            // Required if enabled
-    Payload map[string]string   // Static headers to inject
+    Payload map[string]string // Static headers to inject
+}
+
+// AdminConfig controls the admin control-plane API.
+// JWT uses the shared JWTConfig structure (same fields as auth.jwt).
+// Requires: admin.jwt.issuer, admin.jwt.audience, and at least one of
+// admin.jwt.allowed_emails or admin.jwt.filters.
+type AdminConfig struct {
+    Enabled bool      // false default
+    JWT     JWTConfig
 }
 ```
 
@@ -105,6 +155,13 @@ Examples:
 
 Precedence: Env overrides > TOML (after substitution) > Defaults
 
+### Config Validation Rules
+- `auth.jwt.enabled = true` requires `issuer` and `audience`
+- `auth.api_key.enabled = true` requires `value`
+- Both `auth.jwt` and `auth.api_key` disabled is **valid** — proxy operates in rate-limit-only mode (no credential checks)
+- `admin.enabled = true` requires `admin.jwt.issuer`, `admin.jwt.audience`, and at least one of `admin.jwt.allowed_emails` or `admin.jwt.filters`
+- `server.port` must be 1–65535
+
 ### GOOGLE_CLOUD_PROJECT Auto-Detection
 Sources (in order):
 1. `GOOGLE_CLOUD_PROJECT` env var
@@ -118,28 +175,45 @@ Used for: JWT issuer/audience string replacement
 ```
 HTTP Request
   ↓
+[Admin mux — registered only when admin.enabled = true]
+  ├─ POST /admin/control → AdminAuthMiddleware → ControlHandler
+  └─ GET  /admin/status  → AdminAuthMiddleware → StatusHandler
+  ↓
 1. RequestLogger (log method, path, start time)
   ↓
-2. HeaderSanitizer (remove incoming X-AUTH-* headers)
+2. BodyLimiter (reject body > max_body_bytes with 413)
   ↓
-3. PathFilter (check include/exclude patterns, set context flag)
+3. HeaderSanitizer (remove incoming X-AUTH-* headers)
   ↓
-4. RateLimiter (per-IP sliding window, ban enforcement)
+4. PathFilter (check include/exclude patterns, set context flag)
   ↓
-5. ServeHTTP (main auth handler)
+5. DynamicRuleCheck (admin throttle/block/allow rules; no-op if admin disabled)
+  ↓
+6. ApiKeyRateLimit (per-API-key rate limiting with configurable request matching)
+  ↓
+7. JwtRateLimit (per-JWT sub claim rate limiting)
+  ↓
+8. IpRateLimit (per-IP sliding window, ban enforcement)
+  ↓
+9. ServeHTTP (main auth handler)
    ↓
    ├─ Health Check? → handleHealth() → return
    ├─ Auth Required? (from context)
    │   ↓ NO → Forward to proxy
    │   ↓ YES
+   │   ├─ Both JWT and API-Key disabled? (rate-limit-only mode)
+   │   │   ↓ YES → Forward to proxy (no credential check)
+   │   │   ↓ NO
    │   ├─ JWT Auth Enabled + Bearer Token Present?
    │   │   ↓ YES
    │   │   ├─ ValidateToken() → Claims | Error
-   │   │   ├─ EvaluateFilters(claims, config.Filters) → Pass | Fail
-   │   │   ├─ MapClaims(claims, config.Mappings) → Headers
+   │   │   ├─ EvaluateFilters(claims, config.JWT.Filters) → Pass | Fail
+   │   │   ├─ AllowedEmails non-empty? → check email claim | skip
+   │   │   ├─ limiter.Allow(hash(IP, sub)) → Pass | 429
+   │   │   ├─ MapClaims(claims, config.JWT.Mappings) → Headers
    │   │   ├─ Inject headers into request
    │   │   └─ Forward to proxy
-   │   │   ↓ NO (JWT failed or not present)
+   │   │   ↓ NO (JWT not enabled or bearer token absent)
    │   └─ API-Key Auth Enabled?
    │       ↓ YES
    │       ├─ ValidateAPIKey(request) → Headers | Error
@@ -148,10 +222,68 @@ HTTP Request
    │       ↓ NO
    │       └─ 401 Unauthorized
   ↓
-6. Reverse Proxy (httputil.ReverseProxy)
+9. Reverse Proxy (httputil.ReverseProxy)
    ├─ Rewrite URL (strip prefix if configured)
    ├─ Forward to config.Server.TargetURL
    └─ Return response to client
+```
+
+### Admin Auth Middleware (internal/admin/auth.go)
+AdminAuthMiddleware(validator, allowedEmails, filters) — applied to `/admin/*` routes when `admin.enabled = true`.
+
+```
+Bearer token extracted from Authorization header
+  ↓
+ValidateToken() → Claims | 401
+  ↓
+len(filters) > 0? → EvaluateFilters(claims, filters) → Pass | 401
+  ↓
+len(allowedEmails) > 0? → check email claim in allowedEmails | 401
+  ↓
+Next handler
+```
+
+Access control rules:
+- `filters` and `allowedEmails` are evaluated independently
+- Both are **optional**: an empty map / nil slice means that check is skipped entirely
+- When both are set, **all** conditions must pass (AND logic)
+- Config validation requires at least one of `filters` or `allowed_emails` to be non-empty when `admin.enabled = true`
+
+### Admin Control Plane (internal/admin/handler.go)
+
+**POST /admin/control** — manage dynamic rules and rate limiter settings at runtime.
+
+Rule JSON fields:
+
+| Field | Type | Description |
+|---|---|---|
+| `ruleId` | string | Unique rule identifier (required) |
+| `targetHost` | string | Hostname this rule applies to (required) |
+| `action` | string | `throttle`, `block`, or `allow` (required) |
+| `maxRPM` | int | Max requests per minute — required for `throttle` |
+| `limiter` | string | Target rate limiter: `ip`, `apikey`, or `jwt` |
+| `throttleDelayMs` | int | Set throttle delay on the targeted limiter (ms); `0` = no change |
+| `maxDelaySlots` | int | Set max concurrent throttled responses on the targeted limiter; `0` = no change |
+| `pathPattern` | string | Optional path pattern filter for the rule |
+| `durationSeconds` | int | Rule active duration in seconds (required) |
+
+When `action = "throttle"` and `limiter` is set:
+1. `limiter.SetRequestsPerMin(maxRPM)` — update RPM
+2. If `throttleDelayMs > 0`: `limiter.SetThrottleDelay(throttleDelayMs * ms)` — enable/update delay
+3. If `maxDelaySlots > 0`: `limiter.SetMaxDelaySlots(maxDelaySlots)` — resize semaphore
+4. `limiter.Enable()` — ensure limiter is active
+
+**GET /admin/status** — returns all active rules and rate limiter snapshots:
+```json
+{
+  "rules": [...],
+  "rateLimiters": {
+    "ip":     {"name": "ip", "enabled": true, "requestsPerMin": 60, "activeEntries": 3},
+    "apikey": {"name": "apikey", "enabled": false, "requestsPerMin": 60, "activeEntries": 0},
+    "jwt":    {"name": "jwt", "enabled": true, "requestsPerMin": 30, "activeEntries": 12,
+               "throttleDelay": "200ms", "maxDelaySlots": 50}
+  }
+}
 ```
 
 ### JWT Validation Logic (internal/auth/jwt/validator.go)
@@ -209,12 +341,17 @@ Filter syntax:
 - `"exact-value"` → exact string match
 - `"/regex-pattern/"` → regex match (Go regexp syntax)
 
+Used by both `auth.jwt` (via proxy handler) and `admin.jwt` (via AdminAuthMiddleware).
+
 Example:
 ```toml
 [auth.jwt.filters]
 email_verified = "true"          # Exact match
 email = "/.*@example\\.com$/"   # Regex match
 roles = "admin"                  # Array: passes if "admin" in roles[]
+
+[admin.jwt.filters]
+hd = "yourcompany.com"          # Restrict admin to a Google Workspace domain
 ```
 
 #### Claim Mapping (internal/auth/jwt/mapper.go)
@@ -268,88 +405,126 @@ service = "internal"   # X-AUTH-SERVICE: internal
 source = "backend"     # X-AUTH-SOURCE: backend
 ```
 
-## RATE_LIMITING (internal/ratelimit/limiter.go)
+## RATE_LIMITING (internal/ratelimit/)
 
-### Algorithm: Sliding Window with Temporary Bans
-Per-key tracking with:
-- Window size: 1 minute (fixed)
-- Request limit: config.RequestsPerMin
-- Ban duration: config.BanForMin
-- Key composition: 
-  - For authenticated requests (JWT): hashed `IPv4+ ":" + sub_claim` (SHA256)
-  - For API-Key authenticated requests: IP address only
-  - For non-authenticated requests: IP address only
+### Architecture: Three Independent Limiters
+Rate limiting is handled by three purpose-specific middlewares, each backed by an independent `RateLimiter` instance:
 
-### Rate Limit Key Selection
-For corporate scenarios where multiple users share the same IP:
-- **JWT-authenticated requests**: Rate limit key is based on both IP and JWT `sub` (subject) claim
-  - Flow: IP + sub → SHA256 hash → 43-char base64url string key
-  - Allows: Different JWT users to have independent rate limits
-  - Example: Users A and B from same IP (e.g., corporate network) can each make RequestsPerMin requests
-  - Requires: JWT validation to succeed; rate limiting applied in handler after validation
-- **API-Key authenticated requests**: Rate limit key is IP-only (corporate service assumed to have stable IP)
-  - Flow: IP → rate limit check
-  - Example: Service at 10.0.0.5 limited to RequestsPerMin requests total
-- **Non-authenticated requests** (excluded paths, health checks): Rate limit key is IP-only
-  - Applied at middleware level before authentication
-  - Example: /healthz endpoint rate-limited by source IP
+| Middleware | Config section | Key composition | Scope |
+|---|---|---|---|
+| `IpRateLimit` | `[security.rate_limit]` | `ClientIP(r)` | All requests — DDoS protection layer |
+| `ApiKeyRateLimit` | `[security.apikey_rate_limit]` | `"k:" + hash(key)` or `ClientIP(r)` | Only matching requests (configurable rules) |
+| `JwtRateLimit` | `[security.jwt_rate_limit]` | `"s:" + sub` | Only requests with a Bearer JWT |
 
-### Allow(key string) → (allowed bool, retryAfterSeconds int)
+All three run **before** authentication. `JwtRateLimit` extracts the `sub` claim via a non-validating JWT parse so rate limiting happens before the expensive signature verification.
+
+### RateLimiter Core (internal/ratelimit/limiter.go)
+Algorithm: **Sliding window** per key with temporary bans.
+
+```go
+type RateLimiterConfig struct {
+    Name           string
+    Enabled        bool
+    RequestsPerMin int
+    BanDuration    time.Duration
+    ThrottleDelay  time.Duration // 0 = no delay (default)
+    MaxDelaySlots  int           // semaphore cap; default 100
+}
+```
+
+**Allow(key string) → (allowed bool, retryAfterSeconds int)**
 1. If not enabled or limit ≤ 0 → return true
 2. Get/create entry for key
-3. Check if key is currently banned → return false + retry-after
+3. If key is currently banned → return false + retry-after
 4. If window expired (≥60s since windowStart) → reset count, update windowStart
-5. Increment count
-6. If count > limit:
-   - Set bannedUntil = now + banDuration
-   - Return false + retry-after (rounded up to seconds)
-7. Return true
+5. Increment count; if count > limit → set ban, return false + retry-after
+6. Return true
 
-Cleanup:
-- Periodic (every 60s)
-- Remove entries: bannedUntil passed AND lastSeen > 2*window ago
-- Prevents memory leak from stale keys
+Cleanup: periodic (every 60s), removes entries idle for > 2 minutes and no active ban.
 
-### Memory Efficiency
-- JWT sub claim values can be arbitrarily long; hashing prevents unbounded memory growth
-- Hash function: SHA256(IP + ":" + sub_claim) → 32-byte output → 43-char base64url string
-- Base64url encoding chosen over hex (33% shorter: 43 vs 64 chars)
-- Key map size bounded by: (Number of IPs) × (Number of unique users per IP)
+### Key Composition
+
+**IpRateLimit:**
+- Key: `ClientIP(r)` — raw IP from `RemoteAddr` (no X-Forwarded-For processing)
+
+**ApiKeyRateLimit:**
+- Key source (in priority order):
+  1. `key_header` header value (default `x-goog-api-key`) → `"k:" + hash(value)`
+  2. `key` query parameter → `"k:" + hash(value)`
+  3. No key found → `ClientIP(r)` (fallback)
+- If `include_ip = true`: prefix key with `ClientIP(r) + ":"`
+- Hash function: SHA256(raw) → first 96 bits → 16-char base64url string
+- Request matching: only applies to requests where at least one `[[match]]` rule is satisfied (OR between rules, AND within a rule). If no rules configured → middleware is a passthrough.
+
+**JwtRateLimit:**
+- Key: `"s:" + sub` where `sub` is the JWT `sub` claim (non-validating parse)
+- If no Bearer token or no `sub` claim → passthrough
+- If `include_ip = true`: prefix key with `ClientIP(r) + ":"`
+
+### Throttle Delay (DDoS-Safe Backpressure)
+When `throttle_delay_ms > 0`, rate-limited responses are delayed before returning 429.
+A bounded semaphore (`delaySem chan struct{}`) limits concurrent sleeping goroutines to `max_delay_slots` (default 100). If all slots are occupied (DDoS scenario), the request returns 429 immediately without sleeping.
+
+```go
+// TryAcquireDelaySlot returns (acquired, semaphore).
+// Caller must pass the returned chan to ReleaseDelaySlot to handle
+// concurrent SetMaxDelaySlots calls correctly.
+if acquired, sem := limiter.TryAcquireDelaySlot(); acquired {
+    defer limiter.ReleaseDelaySlot(sem)
+    time.Sleep(limiter.ThrottleDelay())
+}
+```
+
+### Admin Runtime Methods
+All methods are thread-safe:
+
+| Method | Description |
+|---|---|
+| `SetRequestsPerMin(rpm int)` | Update RPM limit |
+| `SetThrottleDelay(d time.Duration)` | Enable/disable/update throttle delay; `0` = disable |
+| `SetMaxDelaySlots(n int)` | Resize the delay semaphore (takes effect immediately) |
+| `Enable()` / `Disable()` | Toggle rate limiting on/off |
+| `GetStatus() *RateLimiterStatus` | Snapshot for admin status endpoint |
+
+```go
+type RateLimiterStatus struct {
+    Name           string `json:"name"`
+    Enabled        bool   `json:"enabled"`
+    RequestsPerMin int    `json:"requestsPerMin"`
+    ActiveEntries  int    `json:"activeEntries"`
+    ThrottleDelay  string `json:"throttleDelay,omitempty"` // e.g. "100ms"
+    MaxDelaySlots  int    `json:"maxDelaySlots,omitempty"`
+}
+```
 
 Response on rate limit:
 - HTTP 429 Too Many Requests
 - Header: `Retry-After: <seconds>`
 - JSON: `{"error":"rate_limited","message":"too many requests","retry_after":123}`
 
-### Example Rate Limit Scenarios
-**Scenario 1: Corporate Network with JWT**
-```
-Config: rate_limit.requests_per_min = 100
+### ApiKeyRateLimit Request Matching (internal/ratelimit/matcher.go)
+`RequestMatcher` evaluates `[[security.apikey_rate_limit.match]]` rules.
 
-Corporate IP 10.0.0.0/24, 50 users, each with unique JWT sub
-
-User alice@corp.com (sub=alice):
-  - Rate limit key: sha256("10.0.0.5:alice")
-  - Limit: 100 req/min per alice (across all sessions)
-
-User bob@corp.com (sub=bob):
-  - Rate limit key: sha256("10.0.0.5:bob")
-  - Limit: 100 req/min per bob (across all sessions)
-
-Result: Both can make 100 req/min simultaneously, 50+ users × 100 req/min = 5000+ req/min total
+```go
+type RequestMatchRule struct {
+    Host   string // exact string or /regex/
+    Path   string // exact string or /regex/
+    Header string // header name that must be present
+}
 ```
 
-**Scenario 2: Corporate Network with API Key**
-```
-Config: rate_limit.requests_per_min = 10000
+- Multiple rules → **OR** logic (any match = matched)
+- Fields within a rule → **AND** logic (all non-empty fields must match)
+- Empty matcher (no rules) → `Matches()` returns false (middleware is a no-op)
+- Host/Path: `/pattern/` syntax → regex; bare string → exact match
 
-Corporate IP 10.0.0.0/24, single API key for all services:
+**Example (Vertex AI endpoints):**
+```toml
+[[security.apikey_rate_limit.match]]
+host = "/.*-aiplatform\\.googleapis\\.com/"
 
-All requests from corporate network:
-  - Rate limit key: "10.0.0.5" (IP only)
-  - Limit: 10000 req/min for entire corporate network
-
-Result: Total corporate traffic limited to 10000 req/min (no per-user distinction)
+[[security.apikey_rate_limit.match]]
+path = "/\\/v1\\/projects\\/.*\\/(endpoints|publishers|models)\\//"
 ```
 
 ## HTTP_REVERSE_PROXY (internal/proxy/proxy.go)
@@ -402,33 +577,43 @@ type Middleware func(http.Handler) http.Handler
    - Purpose: prevent header injection attacks
 3. Call next handler
 
-### RateLimiter Middleware
-Applies rate limiting to non-authenticated requests (excluded paths, health checks).
-For authenticated requests, rate limiting is deferred to the handler after auth validation.
+### IpRateLimit Middleware
+Applies per-IP rate limiting to **all** requests regardless of auth status. Provides the primary DDoS protection layer.
 
-For non-authenticated requests:
-1. Extract client IP from RemoteAddr
-2. Call limiter.Allow(ip) with IP-only key
-3. If not allowed:
-   - Return 429 JSON with retry_after
-   - Don't call next handler
-4. If allowed: call next handler
+1. Extract `ClientIP(r)` from `RemoteAddr` (no X-Forwarded-For processing)
+2. Call `ipLimiter.Allow(ip)` → if not allowed, call `handleRateLimited` → 429
+3. If allowed: call next handler
 
-**Note:** lite-auth-proxy is designed for direct exposure without upstream proxies. ClientIP extraction uses RemoteAddr only and does not process X-Forwarded-For headers. If deployed behind a reverse proxy/load balancer, the proxy must be configured to set RemoteAddr appropriately (e.g., using the PROXY protocol or similar mechanism).
+**Note:** ClientIP extraction uses RemoteAddr only. If deployed behind a load balancer, the proxy must set RemoteAddr via PROXY protocol or similar.
 
-### Handler-Based Rate Limiting (for authenticated requests)
-Applied in the request handler after JWT/API-Key validation succeeds:
+### ApiKeyRateLimit Middleware
+Applies per-API-key rate limiting **only to requests matching configured rules** (`[[security.apikey_rate_limit.match]]`). Passthrough if no rules match.
 
-**JWT Authentication:**
-- Extract `sub` claim from validated JWT token
-- Create hashed key: SHA256(IP + ":" + sub)
-- Call limiter.Allow(hashed_key)
-- Allows: Different JWT users from same IP to have independent rate limits
+1. Check `matcher.Matches(r)` — if false, passthrough
+2. Extract API key from `key_header` header or `key` query param
+3. Compute rate-limit key (`"k:" + hash(key)` or `ClientIP(r)` fallback)
+4. If `include_ip = true`: prefix with `ClientIP(r) + ":"`
+5. Call `apikeyLimiter.Allow(key)` → if not allowed, call `handleRateLimited` → 429
 
-**API-Key Authentication:**
-- Use IP-only key
-- Call limiter.Allow(ip)
-- All requests with same API key from same IP share the rate limit
+### JwtRateLimit Middleware
+Applies per-JWT-identity rate limiting using the `sub` claim. Runs **before** JWT validation to avoid wasting resources on expensive signature checks.
+
+1. Non-validating parse of Bearer token → extract `sub` claim
+2. If no Bearer token or no `sub` → passthrough
+3. Compute rate-limit key `"s:" + sub`; if `include_ip = true`, prefix with `ClientIP(r) + ":"`
+4. Call `jwtLimiter.Allow(key)` → if not allowed, call `handleRateLimited` → 429
+
+### handleRateLimited
+```go
+func handleRateLimited(w http.ResponseWriter, retryAfter int, limiter *ratelimit.RateLimiter) {
+    if acquired, sem := limiter.TryAcquireDelaySlot(); acquired {
+        defer limiter.ReleaseDelaySlot(sem)
+        time.Sleep(limiter.ThrottleDelay())
+    }
+    writeRateLimitResponse(w, retryAfter)
+}
+```
+The semaphore channel is returned from `TryAcquireDelaySlot` and passed to `ReleaseDelaySlot` to ensure the release targets the correct channel even if `SetMaxDelaySlots` replaces it at runtime.
 
 ### RequestLogger Middleware
 Logs every request with:
@@ -757,6 +942,70 @@ export PROXY_SECURITY_RATE_LIMIT_BAN_FOR_MIN=10
 
 ./bin/lite-auth-proxy
 ```
+
+### Example 4: Rate-Limit-Only Mode (no authentication)
+
+```toml
+[server]
+port = 8888
+target_url = "http://localhost:8080"
+
+[security.rate_limit]
+enabled = true
+requests_per_min = 60
+ban_for_min = 5
+
+[auth.jwt]
+enabled = false
+
+[auth.api_key]
+enabled = false
+```
+
+All requests on included paths are forwarded without credential checks.
+Rate limiting and DDoS hardening remain fully active.
+
+### Example 5: Admin Control Plane (domain-based access)
+
+```toml
+[admin]
+enabled = true
+
+[admin.jwt]
+issuer = "https://accounts.google.com"
+audience = "https://my-proxy.run.app"
+
+[admin.jwt.filters]
+hd = "yourcompany.com"   # Any user in the Google Workspace domain
+```
+
+### Example 6: Admin Control Plane (specific service accounts)
+
+```toml
+[admin]
+enabled = true
+
+[admin.jwt]
+issuer = "https://accounts.google.com"
+audience = "https://my-proxy.run.app"
+allowed_emails = [
+  "deploy-sa@my-project.iam.gserviceaccount.com",
+  "ops-sa@my-project.iam.gserviceaccount.com",
+]
+```
+
+### Example 7: auth.jwt with AllowedEmails
+
+```toml
+[auth.jwt]
+enabled = true
+issuer = "https://accounts.google.com"
+audience = "my-app-id"
+allowed_emails = ["alice@example.com", "bob@example.com"]
+```
+
+Only tokens whose `email` claim exactly matches a listed address are accepted.
+`filters` and `allowed_emails` are independent; both can be set simultaneously (AND logic).
 
 ## DEPENDENCIES
 - **github.com/BurntSushi/toml** v1.6.0: TOML parsing

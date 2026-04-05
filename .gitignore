@@ -48,6 +48,9 @@ config.local.toml
 .env
 .env.*.local
 
+# Local Claude settings
+.claude/settings.local.json
+
 # Docker files
 .dockerignore
 

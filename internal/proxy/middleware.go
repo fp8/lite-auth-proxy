@@ -2,6 +2,9 @@ package proxy
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
 	"log/slog"
 	"net"
 	"net/http"
@@ -9,11 +12,16 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/fp8/lite-auth-proxy/internal/ratelimit"
 )
 
 type contextKey string
 
-const authRequiredKey contextKey = "authRequired"
+const (
+	authRequiredKey    contextKey = "authRequired"
+	jwtIdentifiedKey   contextKey = "jwtIdentified"
+)
 
 // RequestLogger adds structured request logs.
 func RequestLogger(logger *slog.Logger, includePaths, excludePaths []string) Middleware {
@@ -63,11 +71,6 @@ func (r *statusRecorder) WriteHeader(code int) {
 	r.ResponseWriter.WriteHeader(code)
 }
 
-// Limiter defines the interface used by rate limit middleware.
-type Limiter interface {
-	Allow(ip string) (bool, int)
-}
-
 // Middleware wraps an http.Handler.
 type Middleware func(http.Handler) http.Handler
 
@@ -92,27 +95,132 @@ func PathFilter(includePaths, excludePaths []string) Middleware {
 	}
 }
 
-// RateLimiter enforces per-IP rate limits for non-authenticated paths.
-// For authenticated paths, rate limiting is applied in the handler after JWT/API-key validation,
-// allowing the key to be based on user identity (JWT sub claim) rather than IP alone.
-func RateLimiter(limiter Limiter) Middleware {
+// IpRateLimit enforces per-IP rate limits for all requests regardless of auth status.
+// This provides DDoS protection by capping requests per IP before any auth processing.
+// When skipIfJwtIdentified is true, requests that carry a JWT sub claim (identified by
+// JwtRateLimit upstream) bypass the IP check — they are already governed by the JWT limiter.
+func IpRateLimit(limiter *ratelimit.RateLimiter, skipIfJwtIdentified bool) Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			requiresAuth := AuthRequiredFromContext(r.Context())
-			// Skip middleware rate limiting for auth-required paths
-			// (will be handled in handler after auth validation)
-			if requiresAuth || limiter == nil {
+			if limiter == nil {
 				next.ServeHTTP(w, r)
 				return
+			}
+
+			if skipIfJwtIdentified {
+				if identified, _ := r.Context().Value(jwtIdentifiedKey).(bool); identified {
+					next.ServeHTTP(w, r)
+					return
+				}
 			}
 
 			ip := ClientIP(r)
 			allowed, retryAfter := limiter.Allow(ip)
 			if !allowed {
-				writeRateLimitResponse(w, retryAfter)
+				handleRateLimited(w, retryAfter, limiter)
 				return
 			}
 
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// ApiKeyRateLimit enforces per-API-key rate limits for requests matching the configured rules.
+// When no rules match, the middleware is a passthrough.
+// keyHeader is the primary header to extract the API key from (e.g. "x-goog-api-key").
+func ApiKeyRateLimit(limiter *ratelimit.RateLimiter, matcher *ratelimit.RequestMatcher, keyHeader string, includeIP bool) Middleware {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if limiter == nil || matcher == nil || !matcher.Matches(r) {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			key := extractApiKey(r, keyHeader)
+			if key == "" {
+				key = ClientIP(r) // fallback to IP if no API key found
+			} else {
+				key = "k:" + hashIdentity(key)
+			}
+
+			if includeIP {
+				key = ClientIP(r) + ":" + key
+			}
+
+			allowed, retryAfter := limiter.Allow(key)
+			if !allowed {
+				handleRateLimited(w, retryAfter, limiter)
+				return
+			}
+
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// JwtRateLimit enforces per-JWT-identity rate limits using the Bearer token's sub claim.
+// Uses a non-validating JWT parse (rate limiting runs before expensive JWT validation).
+// When no Bearer token or sub claim is present, the middleware is a passthrough.
+func JwtRateLimit(limiter *ratelimit.RateLimiter, includeIP bool) Middleware {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if limiter == nil {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			sub := extractBearerSub(r.Header.Get("Authorization"))
+			if sub == "" {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			// Mark JWT identity in context so IpRateLimit can skip when configured.
+			ctx := context.WithValue(r.Context(), jwtIdentifiedKey, true)
+			r = r.WithContext(ctx)
+
+			key := "s:" + sub
+			if includeIP {
+				key = ClientIP(r) + ":" + key
+			}
+
+			allowed, retryAfter := limiter.Allow(key)
+			if !allowed {
+				handleRateLimited(w, retryAfter, limiter)
+				return
+			}
+
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// handleRateLimited applies the optional throttle delay before writing a 429 response.
+func handleRateLimited(w http.ResponseWriter, retryAfter int, limiter *ratelimit.RateLimiter) {
+	if acquired, sem := limiter.TryAcquireDelaySlot(); acquired {
+		defer limiter.ReleaseDelaySlot(sem)
+		time.Sleep(limiter.ThrottleDelay())
+	}
+	writeRateLimitResponse(w, retryAfter)
+}
+
+// BodyLimiter rejects requests whose body exceeds maxBytes.
+// If Content-Length is present and exceeds the limit, the request is rejected immediately.
+// Otherwise, the body is wrapped with http.MaxBytesReader for streaming protection.
+func BodyLimiter(maxBytes int64) Middleware {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if maxBytes > 0 && r.Body != nil && r.Body != http.NoBody {
+				if r.ContentLength > maxBytes {
+					writeJSON(w, http.StatusRequestEntityTooLarge, errorResponse{
+						Error:   "request_too_large",
+						Message: "request body exceeds size limit",
+					})
+					return
+				}
+				r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+			}
 			next.ServeHTTP(w, r)
 		})
 	}
@@ -198,4 +306,44 @@ func ClientIP(r *http.Request) string {
 	}
 
 	return r.RemoteAddr
+}
+
+// extractApiKey extracts an API key from the request, checking the given header
+// name first, then the "key" query parameter.
+func extractApiKey(r *http.Request, keyHeader string) string {
+	if keyHeader != "" {
+		if key := r.Header.Get(keyHeader); key != "" {
+			return key
+		}
+	}
+	return r.URL.Query().Get("key")
+}
+
+// hashIdentity returns the first 16 base64url chars of the SHA-256 of raw.
+func hashIdentity(raw string) string {
+	h := sha256.Sum256([]byte(raw))
+	return base64.RawURLEncoding.EncodeToString(h[:12]) // 96 bits → 16 chars
+}
+
+// extractBearerSub does a non-validating parse of a Bearer JWT to read the sub claim.
+// Returns "" if the header is absent, not a JWT, or has no sub claim.
+func extractBearerSub(authHeader string) string {
+	if !strings.HasPrefix(authHeader, "Bearer ") {
+		return ""
+	}
+	token := strings.TrimPrefix(authHeader, "Bearer ")
+	parts := strings.SplitN(token, ".", 3)
+	if len(parts) != 3 {
+		return ""
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return ""
+	}
+	var claims map[string]interface{}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return ""
+	}
+	sub, _ := claims["sub"].(string)
+	return sub
 }

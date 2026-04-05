@@ -15,9 +15,45 @@ target = ""                                    # Optional: proxy health check to
                                                # If empty, returns local 200 OK response
 
 [security.rate_limit]
-enabled = true                                 # Enable/disable rate limiting
-requests_per_min = 60                          # Max requests per IP per minute
+enabled = true                                 # Enable/disable IP-based rate limiting
+requests_per_min = 60                          # Max requests per IP per minute (In this context, unauthenticated traffic)
 ban_for_min = 5                                # Ban duration when rate limit exceeded
+skip_if_jwt_identified = true                  # Skip IP rate limit when a JWT sub claim is present.
+                                               # Prevents penalising corporate users who share a
+                                               # single outbound NAT IP — they are already governed
+                                               # by the JWT rate limiter. Anonymous traffic (no JWT)
+                                               # is still subject to the IP limit.
+                                               # Set to false to enforce the IP limit unconditionally.
+# throttle_delay_ms = 0                        # Delay (ms) before returning 429 (0 = disabled)
+# max_delay_slots = 100                        # Max concurrent delayed responses (DDoS safety)
+
+[security.apikey_rate_limit]
+enabled = false                                # Enable/disable API-key-based rate limiting
+requests_per_min = 200                         # Max requests per API key per minute
+ban_for_min = 5                                # Ban duration when rate limit exceeded
+include_ip = false                             # Prefix rate-limit key with client IP
+key_header = "x-goog-api-key"                  # Header to extract API key from
+# throttle_delay_ms = 0                        # Delay (ms) before returning 429 (0 = disabled)
+# max_delay_slots = 100                        # Max concurrent delayed responses (DDoS safety)
+
+# Request matching rules — rate limiting only applies to matching requests.
+# Multiple [[match]] entries use OR logic; fields within a rule use AND logic.
+# Host/Path support exact strings or /regex/ syntax.
+#
+# Example: Vertex AI endpoints
+# [[security.apikey_rate_limit.match]]
+# host = "/.*-aiplatform\\.googleapis\\.com/"
+#
+# [[security.apikey_rate_limit.match]]
+# path = "/\\/v1\\/projects\\/.*\\/(endpoints|publishers|models)\\//"
+
+[security.jwt_rate_limit]
+enabled = false                                # Enable/disable JWT-based rate limiting
+requests_per_min = 200                         # Max requests per JWT sub claim per minute
+ban_for_min = 5                                # Ban duration when rate limit exceeded
+include_ip = true                              # Prefix rate-limit key with client IP
+# throttle_delay_ms = 0                        # Delay (ms) before returning 429 (0 = disabled)
+# max_delay_slots = 100                        # Max concurrent delayed responses (DDoS safety)
 
 [auth]
 header_prefix = "X-AUTH-"                      # Prefix for injected authentication headers
@@ -48,3 +84,25 @@ value = "{{ENV.API_KEY_SECRET}}"               # Expected API key value
 [auth.api_key.payload]
 # Static headers to inject when authenticated via API key
 # Example: service = "internal" → X-AUTH-SERVICE: internal
+
+# When both auth.jwt.enabled and auth.api_key.enabled are false,
+# the proxy operates in rate-limit-only mode: all requests are forwarded
+# without credential checks (only rate limiting applies).
+
+[admin]
+enabled = false                                # Enable the admin control-plane API
+
+[admin.jwt]
+# GCP service account identity tokens (Google OIDC) are used to authenticate admin requests.
+issuer = "https://accounts.google.com"         # Identity token issuer
+audience = "32555940559.apps.googleusercontent.com" # Expected audience for Google ID Token
+tolerance_secs = 30                            # Clock skew tolerance
+cache_ttl_mins = 1440                          # JWKS key cache TTL (24 hours)
+# allowed_emails = []                          # List of authorised service account emails
+                                               # Example: ["sa@my-project.iam.gserviceaccount.com"]
+
+[admin.jwt.filters]
+# Claim validation rules for admin access (exact match or /regex/)
+# Example: restrict to a specific Google Workspace hosted domain
+# hd = "yourcompany.com"
+# Example: email = "/.*@yourcompany\\.com$/"
