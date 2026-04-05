@@ -14,6 +14,8 @@
 
 ## Admin Endpoints
 
+> **Plugin required:** The admin endpoints require the `admin` plugin (`_ "github.com/fp8/lite-auth-proxy/internal/plugins/admin"`). They are included in the full build but not in the lite build.
+
 Available only when `admin.enabled = true`. For full documentation on the admin control plane — including configuration, authentication, rule lifecycle, serverless caveats, and examples — see the [Admin Control Plane Guide](ADMIN.md).
 
 **Quick reference:**

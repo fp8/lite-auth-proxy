@@ -14,13 +14,20 @@ import (
 
 	"github.com/fp8/lite-auth-proxy/internal/config"
 	"github.com/fp8/lite-auth-proxy/internal/logging"
+	"github.com/fp8/lite-auth-proxy/internal/plugin"
 	"github.com/fp8/lite-auth-proxy/internal/proxy"
 	"github.com/fp8/lite-auth-proxy/internal/startup"
+
+	// Flex build: register all plugins via blank imports.
+	_ "github.com/fp8/lite-auth-proxy/internal/plugins/admin"
+	_ "github.com/fp8/lite-auth-proxy/internal/plugins/apikey"
+	_ "github.com/fp8/lite-auth-proxy/internal/plugins/ratelimit"
+	_ "github.com/fp8/lite-auth-proxy/internal/plugins/storage/firestore"
 )
 
 var (
 	// Version is set via ldflags during build
-	Version = "1.1.2"
+	Version = "1.2.0"
 )
 
 const (
@@ -38,8 +45,9 @@ func main() {
 	logLevel := logging.GetLogLevelFromEnv()
 	logger := logging.InitLogger(logMode, logLevel)
 
-	logger.Info("Starting lite-auth-proxy",
+	logger.Info("Starting flex-auth-proxy",
 		"version", Version,
+		"build", buildVariant(),
 		"log_mode", logMode,
 	)
 
@@ -108,8 +116,20 @@ func main() {
 	}
 }
 
+// buildVariant returns the build type based on registered plugins.
+func buildVariant() string {
+	plugins := plugin.All()
+	if len(plugins) == 0 {
+		return "lite"
+	}
+	if len(plugins) >= 3 { // ratelimit + admin + apikey = flex
+		return "flex"
+	}
+	return "custom"
+}
+
 func parseFlags(args []string, output io.Writer) (string, bool, error) {
-	fs := flag.NewFlagSet("lite-auth-proxy", flag.ContinueOnError)
+	fs := flag.NewFlagSet("flex-auth-proxy", flag.ContinueOnError)
 	fs.SetOutput(output)
 	configPath := fs.String("config", defaultConfigPath, "Path to configuration file")
 	healthcheckOnly := fs.Bool("healthcheck", false, "Run configured health check and exit")

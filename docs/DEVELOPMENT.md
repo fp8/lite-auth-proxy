@@ -94,23 +94,30 @@ curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/insta
 ### Build Binary
 
 ```bash
-# Build using Make (recommended)
-make build
+# Build flex binary (all plugins)
+make build-flex
+# Binary: ./bin/flex-auth-proxy
 
-# Binary is created at: ./bin/lite-auth-proxy
+# Build lite binary (no plugins)
+make build-lite
+# Binary: ./bin/lite-auth-proxy
+
+# Build both
+make build-all
 
 # Or build manually
-go build -v -ldflags "-s -w -X main.Version=1.0.0" -o bin/lite-auth-proxy ./cmd/proxy
+go build -v -ldflags "-s -w -X main.Version=1.2.0" -o bin/flex-auth-proxy ./cmd/flex
+go build -v -ldflags "-s -w -X main.Version=1.2.0" -o bin/lite-auth-proxy ./cmd/lite
 ```
 
 ### Build with Custom Version
 
 ```bash
-# Version is automatically extracted from cmd/proxy/main.go
-make build
+# Version is automatically extracted from cmd/flex/main.go
+make build-flex
 
 # Or specify manually
-go build -ldflags "-X main.Version=1.2.3" -o bin/lite-auth-proxy ./cmd/proxy
+go build -ldflags "-X main.Version=1.2.3" -o bin/flex-auth-proxy ./cmd/flex
 ```
 
 ### Clean Build Artifacts
@@ -125,16 +132,16 @@ make clean
 
 ```bash
 # Build and run
-make run
+make run-flex
 
 # Or run directly
-./bin/lite-auth-proxy
+./bin/flex-auth-proxy
 ```
 
 ### Run with Custom Config
 
 ```bash
-./bin/lite-auth-proxy -config config/config.test.toml
+./bin/flex-auth-proxy -config /path/to/custom-config.toml
 ```
 
 ### Run with Environment Overrides
@@ -143,7 +150,7 @@ make run
 PROXY_SERVER_PORT=9090 \
 PROXY_SERVER_TARGET_URL=http://localhost:8080 \
 PROXY_AUTH_JWT_ENABLED=true \
-./bin/lite-auth-proxy
+./bin/flex-auth-proxy
 ```
 
 ## Testing
@@ -165,7 +172,7 @@ Tests are organized into two categories:
 # Run all unit tests (excludes integration tests)
 make test
 
-# Runs approximately 92 tests
+# Runs approximately 150 tests
 # Output includes race detector
 ```
 
@@ -184,7 +191,7 @@ make test-integration
 # Run both unit and integration tests
 make test-all
 
-# Runs approximately 105 total tests
+# Runs approximately 190 total tests
 ```
 
 #### Specific Package Tests
@@ -418,23 +425,37 @@ go vet ./...
 ```
 lite-auth-proxy/
 ├── cmd/
-│   └── proxy/
-│       └── main.go                  # Application entry point
+│   ├── flex/
+│   │   └── main.go                  # Flex build entry point (all plugins)
+│   └── lite/
+│       └── main.go                  # Lite build entry point (no plugins)
 ├── internal/
 │   ├── auth/                        # Authentication logic
 │   │   ├── apikey/                  # API-key authentication
 │   │   └── jwt/                     # JWT authentication
 │   ├── config/                      # Configuration loading
 │   ├── logging/                     # Structured logging
+│   ├── plugin/                      # Plugin registry and interfaces
+│   ├── plugins/                     # Plugin implementations
+│   │   ├── ratelimit/              # Rate limiting plugin (priority 60)
+│   │   ├── admin/                  # Admin control-plane plugin (priority 50)
+│   │   ├── apikey/                 # API-key auth plugin (priority 90)
+│   │   └── storage/
+│   │       └── firestore/          # Firestore storage plugin (priority 5)
+│   ├── store/                       # RuleStore/KeyValueStore interfaces
+│   ├── admin/                       # Admin handler and types
 │   ├── proxy/                       # Reverse proxy core
-│   └── ratelimit/                   # Rate limiting
+│   ├── ratelimit/                   # Rate limiting core
+│   └── startup/                     # Rule loading from env
 ├── config/
-│   └── config.toml                  # Default configuration
+│   ├── config.toml                  # Default configuration (full build)
+│   └── config-lite.toml             # Default configuration (lite build)
 ├── docs/                            # Documentation
 ├── bin/                             # Build output (gitignored)
 ├── .env.example                     # Environment variable template
 ├── .gitignore
-├── Dockerfile                       # Container image
+├── Dockerfile.flex                  # Flex build container image
+├── Dockerfile.lite                  # Lite build container image
 ├── cloudbuild.yaml                  # Google Cloud Build config
 ├── go.mod                           # Go module dependencies
 ├── go.sum                           # Dependency checksums
@@ -449,10 +470,12 @@ lite-auth-proxy/
 | Package | Version | Purpose |
 |---------|---------|---------|
 | `github.com/BurntSushi/toml` | v1.6.0 | TOML configuration parsing |
+| `cloud.google.com/go/firestore` | v1.21.0 | Firestore storage plugin |
 
 ### Indirect Dependencies
 
 - Google Cloud Secret Manager SDK (optional, for secret retrieval)
+- Google Cloud Firestore SDK (only in full build, for storage plugin)
 - Standard library packages for HTTP, crypto, logging
 
 ### Adding Dependencies
@@ -473,7 +496,7 @@ go mod verify
 ### Enable Debug Logging
 
 ```bash
-LOG_LEVEL=debug ./bin/lite-auth-proxy
+LOG_LEVEL=debug ./bin/flex-auth-proxy
 ```
 
 ### Debug with Delve
@@ -483,7 +506,7 @@ LOG_LEVEL=debug ./bin/lite-auth-proxy
 go install github.com/go-delve/delve/cmd/dlv@latest
 
 # Run with debugger
-dlv debug ./cmd/proxy -- -config config/config.toml
+dlv debug ./cmd/flex -- -config config/config-flex.toml
 ```
 
 ### VSCode Debug Configuration
@@ -498,8 +521,8 @@ dlv debug ./cmd/proxy -- -config config/config.toml
       "type": "go",
       "request": "launch",
       "mode": "debug",
-      "program": "${workspaceFolder}/cmd/proxy",
-      "args": ["-config", "config/config.toml"],
+      "program": "${workspaceFolder}/cmd/flex",
+      "args": ["-config", "config/config-flex.toml"],
       "env": {
         "LOG_MODE": "development",
         "LOG_LEVEL": "debug"
@@ -548,10 +571,13 @@ go tool pprof cpu.out
 ```bash
 # Using Make (requires GOOGLE_CLOUD_PROJECT)
 export GOOGLE_CLOUD_PROJECT=my-dev-project
-make docker-build
+make docker-build-flex  # Flex image
+make docker-build-lite  # Lite image
+make docker-build-all   # Both images
 
 # Or manually
-docker build -t lite-auth-proxy:dev .
+docker build -t flex-auth-proxy:dev -f Dockerfile.flex .
+docker build -t lite-auth-proxy:dev -f Dockerfile.lite .
 ```
 
 ### Run in Docker
@@ -567,12 +593,12 @@ docker run --rm -p 8888:8888 \
   -e GOOGLE_CLOUD_PROJECT=test-project \
   -e PROXY_SERVER_TARGET_URL=http://host.docker.internal:8080 \
   -e LOG_MODE=development \
-  lite-auth-proxy:dev
+  flex-auth-proxy:dev
 
 # Override config path
 docker run --rm -p 8888:8888 \
   -e PROXY_SERVER_TARGET_URL=http://host.docker.internal:8080 \
-  lite-auth-proxy:dev -config /path/to/custom-config.toml
+  flex-auth-proxy:dev -config /path/to/custom-config.toml
 ```
 
 ### Test Docker Image
@@ -667,6 +693,7 @@ Types: `feat`, `fix`, `docs`, `test`, `refactor`, `perf`, `chore`
 
 ## See Also
 
+- [Plugin Guide](PLUGINS.md) — Plugin architecture, custom builds, plugin development
 - [Configuration Guide](CONFIGURATION.md)
 - [Environment Variables Guide](ENVIRONMENT.md)
 - [API Documentation](API.md)

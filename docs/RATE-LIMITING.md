@@ -1,5 +1,7 @@
 # Rate Limiting Guide
 
+> **Plugin required:** Rate limiting requires the `ratelimit` plugin (`_ "github.com/fp8/lite-auth-proxy/internal/plugins/ratelimit"`). It is included in the full build but not in the lite build. See the [Plugin Guide](PLUGINS.md) for build variants.
+
 lite-auth-proxy provides a unified, multi-layer rate limiting system that protects your backend from abuse. Each layer targets a different identity dimension and can be enabled independently.
 
 ## Rate Limiter Layers
@@ -14,7 +16,7 @@ All three layers share the same configuration knobs and behavior model. They are
 
 ## Configuration Reference
 
-The TOML blocks below reflect the shipped `config/config.toml` defaults. The **Default** column in each table shows the code fallback when a field is omitted entirely from the config file.
+The TOML blocks below reflect the shipped `config/config-flex.toml` defaults. The **Default** column in each table shows the code fallback when a field is omitted entirely from the config file.
 
 ### Per-IP Rate Limiting
 

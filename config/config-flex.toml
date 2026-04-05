@@ -1,5 +1,5 @@
-# lite-auth-proxy configuration
-# This is the default configuration file
+# flex-auth-proxy configuration (flex build)
+# Full-featured proxy — all plugins enabled.
 
 [server]
 port = 8888                                    # HTTP listening port

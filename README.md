@@ -11,14 +11,15 @@ lite-auth-proxy is a lightweight authentication proxy that sits in front of your
 
 ### Key Features
 
+- **Plugin Architecture**: Compile-time plugin system — include only the features you need. Ships as `flex-auth-proxy` (all plugins) and `lite-auth-proxy` (JWT-only)
 - **Dual Authentication**: JWT (JWKS auto-discovery) and API-Key authentication
 - **Rate-Limit-Only Mode**: Disable both auth methods to forward all requests without credential checks — rate limiting still applies
 - **High Performance**: Fast startup (<50ms), minimal memory (<32MB)
 - **Zero-Trust Security**: Header sanitization, claim-based access control
 - **Unified Rate Limiting**: Per-IP, per-API-key, and per-JWT rate limiting with configurable request matching and automatic ban mechanism
 - **Dynamic Control Plane**: Runtime throttle/block/allow rules via `/admin/control` API — no restart needed
+- **Persistent Rule Storage**: Firestore-backed rule sync across Cloud Run instances with zero-latency hot path
 - **Throttle Delay**: Optional DDoS-safe delay on rate-limited responses to improve stability under attack
-- **Rule Persistence**: Active throttle rules survive Cloud Run instance restarts via `PROXY_THROTTLE_RULES`
 - **Structured Logging**: JSON/text logging with `slog`, Google Cloud Logging compatible
 - **URL Rewriting**: Strip path prefixes before forwarding
 - **Health Checks**: Configurable health endpoint with proxy-to-downstream support
@@ -37,7 +38,9 @@ lite-auth-proxy is a lightweight authentication proxy that sits in front of your
 git clone https://github.com/fp8/lite-auth-proxy.git
 cd lite-auth-proxy
 go mod download
-make build
+make build-flex   # Flex build → ./bin/flex-auth-proxy (all plugins)
+# or
+make build-lite   # Lite build → ./bin/lite-auth-proxy (JWT-only, no plugins)
 ```
 
 ### Basic Usage
@@ -47,10 +50,10 @@ make build
 cp .env.example .env
 
 # Run with default config
-make run
+make run-flex
 
 # Or with custom config
-./bin/lite-auth-proxy -config /path/to/config.toml
+./bin/flex-auth-proxy -config /path/to/config.toml
 ```
 
 ### Test the Proxy
@@ -91,7 +94,8 @@ flowchart TD
 
 ## Documentation
 
-- **[Configuration Guide](docs/CONFIGURATION.md)** — Complete configuration reference with all options, filters, and mappings
+- **[Plugin Guide](docs/PLUGINS.md)** — Build variants, plugin configuration, custom builds, and plugin development
+- **[Configuration Guide](docs/CONFIGURATION.md)** — Core configuration reference, cross-plugin scenarios, and config validation
 - **[Rate Limiting Guide](docs/RATE-LIMITING.md)** — Per-IP, per-API-key, and per-JWT rate limiting, throttle delay, and dynamic rules
 - **[Admin Control Plane](docs/ADMIN.md)** — Runtime traffic management, rule lifecycle, and serverless caveats
 - **[Environment Variables Guide](docs/ENVIRONMENT.md)** — All environment variables, substitution syntax, and precedence rules
@@ -137,7 +141,6 @@ for commercial licensing inquiries.
 ## Roadmap
 
 - [ ] mTLS support for upstream connections
-- [ ] Plugin system for custom authentication methods
 - [ ] Prometheus metrics export
 - [ ] WebSocket proxying support
 - [ ] gRPC proxying support

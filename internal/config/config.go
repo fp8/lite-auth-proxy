@@ -18,6 +18,14 @@ type Config struct {
 	Security SecurityConfig `toml:"security"`
 	Auth     AuthConfig     `toml:"auth"`
 	Admin    AdminConfig    `toml:"admin"`
+	Storage  StorageConfig  `toml:"storage"`
+}
+
+// StorageConfig contains settings for the persistent storage backend.
+type StorageConfig struct {
+	Backend          string `toml:"backend"`           // e.g. "firestore"; empty = in-memory
+	ProjectID        string `toml:"project_id"`        // GCP project ID (defaults to GOOGLE_CLOUD_PROJECT)
+	CollectionPrefix string `toml:"collection_prefix"` // Firestore collection prefix (default: "proxy")
 }
 
 // AdminConfig contains settings for the dynamic control-plane API.
@@ -402,6 +410,17 @@ func applyEnvOverrides(config *Config) error {
 	}
 	config.Auth.APIKey.Payload = applyJWTMapOverrides("PROXY_AUTH_API_KEY_PAYLOAD_", config.Auth.APIKey.Payload)
 
+	// Storage overrides
+	if val := os.Getenv("PROXY_STORAGE_BACKEND"); val != "" {
+		config.Storage.Backend = val
+	}
+	if val := os.Getenv("PROXY_STORAGE_PROJECT_ID"); val != "" {
+		config.Storage.ProjectID = val
+	}
+	if val := os.Getenv("PROXY_STORAGE_COLLECTION_PREFIX"); val != "" {
+		config.Storage.CollectionPrefix = val
+	}
+
 	// Admin overrides
 	if val := os.Getenv("PROXY_ADMIN_ENABLED"); val != "" {
 		enabled, err := strconv.ParseBool(val)
@@ -543,6 +562,11 @@ func setDefaults(config *Config) {
 		if config.Admin.JWT.CacheTTLMins == 0 {
 			config.Admin.JWT.CacheTTLMins = 1440 // 24 hours
 		}
+	}
+
+	// Storage defaults
+	if config.Storage.CollectionPrefix == "" {
+		config.Storage.CollectionPrefix = "proxy"
 	}
 
 	// API Key defaults

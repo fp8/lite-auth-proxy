@@ -12,19 +12,20 @@ Development guide for AI coding assistants working in this repository.
 
 - **`README.md`** — overview only: key features, quick start, architecture diagram, links to docs. Do NOT add detailed config, API references, or deployment instructions there.
 - **`docs/`** — all detail goes here:
-  - `docs/CONFIGURATION.md` — full config reference
+  - `docs/PLUGINS.md` — plugin architecture, per-plugin config reference, custom builds
+  - `docs/CONFIGURATION.md` — core config reference, cross-plugin scenarios
   - `docs/RATE-LIMITING.md` — rate limiting guide
   - `docs/ENVIRONMENT.md` — env var overrides
   - `docs/API.md` — HTTP endpoints and admin API
   - `docs/ADMIN.md` — Admin control plane, rule lifecycle, serverless caveats
-  - `docs/DEPLOYMENT.md` — Docker, Cloud Run, sidecar setup
+  - `docs/DEPLOYMENT.md` — Docker, Cloud Run, sidecar setup, build variants
   - `docs/DEVELOPMENT.md` — dev setup, testing, debugging
 
 ### 2. Version and Release Notes
 
-- **Version string** lives in `cmd/proxy/main.go` lines 23–24:
+- **Version string** lives in `cmd/flex/main.go` lines 28–31:
   ```go
-  Version = "1.1.1"
+  Version = "1.2.0"
   ```
   Update this on every release.
 
@@ -47,15 +48,24 @@ If you add a new rate-limiting or security knob to `config.go`, check whether it
 ## Code Layout
 
 ```
-cmd/proxy/main.go          # Entry point; version constant
+cmd/flex/main.go           # Flex build entry point (all plugins); version constant
+cmd/lite/main.go           # Lite build entry point (no plugins)
 internal/config/config.go  # Config structs and TOML/env parsing
-internal/admin/            # Admin control-plane (handler, types, rule store)
+internal/plugin/           # Plugin registry and interfaces
+internal/plugins/          # Plugin implementations:
+  ratelimit/               #   Rate limiting plugin (priority 60)
+  admin/                   #   Admin control-plane plugin (priority 50)
+  apikey/                  #   API-key auth plugin (priority 90)
+  storage/firestore/       #   Firestore storage plugin (priority 5)
+internal/store/            # RuleStore/KeyValueStore interfaces and in-memory defaults
+internal/admin/            # Admin handler, types (uses store.Rule via type alias)
 internal/auth/             # JWT and API-key auth
 internal/proxy/            # Middleware pipeline and reverse proxy
 internal/ratelimit/        # Unified rate limiter (IP, API-key, JWT)
 internal/startup/          # Rule loading from PROXY_THROTTLE_RULES
 docs/                      # All detailed documentation
-config/config.toml         # Default configuration
+config/config-flex.toml    # Default configuration (flex build)
+config/config-lite.toml    # Default configuration (lite build)
 ```
 
 ## Config → Env Var Naming Convention
@@ -69,8 +79,8 @@ When adding new config fields, add the corresponding env var override in `intern
 ## Testing
 
 ```bash
-make test          # unit tests only (~92 tests, always verbose)
-make test-all      # unit + integration tests (~105 tests)
+make test          # unit tests only (~150 tests, always verbose)
+make test-all      # unit + integration tests (~190 tests)
 make coverage      # all tests with HTML coverage report
 make lint          # golangci-lint
 ```
@@ -80,7 +90,12 @@ Integration tests in `internal/proxy/integration_test.go` run a full proxy stack
 ## Build and Run
 
 ```bash
-make build         # ./bin/lite-auth-proxy
-make run           # run with config/config.toml + .env
-make docker-build  # build Docker image
+make build-flex    # ./bin/flex-auth-proxy (all plugins)
+make build-lite    # ./bin/lite-auth-proxy (no plugins)
+make build-all     # both binaries
+make run-flex      # run flex-auth-proxy with config/config-flex.toml + .env
+make run-lite      # run lite-auth-proxy with config/config-lite.toml + .env
+make docker-build-flex  # build flex-auth-proxy Docker image
+make docker-build-lite  # build lite-auth-proxy Docker image
+make docker-build-all   # both Docker images
 ```

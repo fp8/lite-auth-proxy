@@ -4,22 +4,28 @@ This document provides a comprehensive reference for all configuration options i
 
 ## Configuration File Format
 
-lite-auth-proxy uses TOML format for its configuration files. The default configuration file location is `config/config.toml`, but you can specify a custom location using the `-config` flag:
+lite-auth-proxy uses TOML format for its configuration files. The default configuration files are `config/config-flex.toml` (flex build) and `config/config-lite.toml` (lite build). You can specify a custom location using the `-config` flag:
 
 ```bash
+./bin/flex-auth-proxy -config /path/to/custom-config.toml
+# or
 ./bin/lite-auth-proxy -config /path/to/custom-config.toml
 ```
 
 ## Configuration Structure
 
-The configuration is organized into five top-level sections:
+The configuration is organized into these top-level sections:
 
-- **[server]** - HTTP server and proxy settings
-- **[security]** - Security features like rate limiting
-- **[auth]** - Authentication configuration (JWT and API-Key)
-- **[auth.jwt]** - JWT-specific settings
-- **[auth.api_key]** - API-Key-specific settings
-- **[admin]** - Dynamic control-plane API (disabled by default)
+- **[server]** — HTTP server and proxy settings (core — always available)
+- **[security]** — Rate limiting (requires `ratelimit` plugin)
+- **[auth.jwt]** — JWT authentication (core — always available)
+- **[auth.api_key]** — API-Key authentication (requires `apikey` plugin)
+- **[admin]** — Dynamic control-plane API (requires `admin` plugin)
+- **[storage]** — Persistent storage backend (requires a `storage-*` plugin)
+
+Sections marked as requiring a plugin are only available in builds that include the plugin. The flex build (`flex-auth-proxy`) includes all plugins. The lite build (`lite-auth-proxy`) includes only core sections. See the [Plugin Guide](PLUGINS.md) for details.
+
+> **Config validation:** If a plugin-gated section is enabled but the required plugin is not compiled in, the proxy fails at startup with a clear error message naming the missing plugin and the import path to add.
 
 ## Server Configuration
 
@@ -82,8 +88,6 @@ target = ""
 
 ## Security Configuration
 
-lite-auth-proxy provides three independent rate limiter layers plus a request body size limit. For detailed scenarios, tuning guidance, and the ShockGuard throttle mechanism, see the [Rate Limiting Guide](RATE-LIMITING.md).
-
 ### Body Size Limit
 
 ```toml
@@ -95,100 +99,11 @@ max_body_bytes = 1048576             # 1 MiB default; 0 = no limit
 |-------|------|---------|---|-------------|
 | `max_body_bytes` | integer | `1048576` (1 MiB) | `PROXY_SECURITY_MAX_BODY_BYTES` | Max request body size in bytes. Requests exceeding this limit receive a 413 response. `0` disables the limit. |
 
-### Per-IP Rate Limiting
+### Rate Limiting
 
-```toml
-[security.rate_limit]
-enabled = true                       # First line of defense -- on by default
-requests_per_min = 60                # Reasonable ceiling for anonymous/unauthenticated traffic
-ban_for_min = 5                      # Short enough to not block legitimate users for long
-skip_if_jwt_identified = true        # Authenticated (JWT) users bypass the IP limit --
-                                     # prevents penalising corporate NAT users who are
-                                     # already governed by the JWT rate limiter
-# throttle_delay_ms = 0             # Disabled by default to keep response latency predictable
-# max_delay_slots = 100             # Only relevant when throttle_delay_ms > 0
-```
+> **Plugin required:** The `[security.rate_limit]`, `[security.apikey_rate_limit]`, and `[security.jwt_rate_limit]` sections require the `ratelimit` plugin. The lite build does not include this plugin. See the [Rate Limiter Plugin](PLUGINS.md#rate-limiter-plugin) for the full configuration reference.
 
-| Field | Type | Default | ENV Variable | Description |
-|-------|------|---------|---|-------------|
-| `enabled` | boolean | `false` | `PROXY_SECURITY_RATE_LIMIT_ENABLED` | Enable per-IP rate limiting |
-| `requests_per_min` | integer | `60` | `PROXY_SECURITY_RATE_LIMIT_REQUESTS_PER_MIN` | Max requests per IP per minute |
-| `ban_for_min` | integer | `5` | `PROXY_SECURITY_RATE_LIMIT_BAN_FOR_MIN` | Ban duration when limit exceeded (minutes) |
-| `skip_if_jwt_identified` | boolean | `true` | `PROXY_SECURITY_RATE_LIMIT_SKIP_IF_JWT_IDENTIFIED` | Skip IP rate limit when a JWT `sub` claim is present; see [Rate Limiting Guide](RATE-LIMITING.md#corporate-nat-and-shared-ip-scenarios) |
-| `throttle_delay_ms` | integer | `0` | `PROXY_SECURITY_RATE_LIMIT_THROTTLE_DELAY_MS` | Delay before 429 response (ms); `0` = disabled |
-| `max_delay_slots` | integer | `100` | `PROXY_SECURITY_RATE_LIMIT_MAX_DELAY_SLOTS` | Max concurrent throttled responses (DDoS cap) |
-
-**Why these defaults:** IP rate limiting is the broadest protection layer and is enabled out of the box. The 60 req/min limit stops basic abuse while allowing normal browsing. `skip_if_jwt_identified = true` because corporate NAT users sharing an IP would quickly exhaust the bucket -- those users are better served by the per-JWT limiter. Throttle delay is off by default because most deployments prefer a clean 429 over holding connections open.
-
-### Per-API-Key Rate Limiting
-
-```toml
-[security.apikey_rate_limit]
-enabled = false                      # Opt-in -- only needed when your backend uses API keys
-requests_per_min = 200               # Higher than IP limit because API keys represent known,
-                                     # trusted integrations rather than anonymous traffic
-ban_for_min = 5                      # Standard ban duration
-include_ip = false                   # Keys typically identify a specific integration, not a user
-key_header = "x-goog-api-key"        # Pre-configured for Google Cloud / Vertex AI usage
-# throttle_delay_ms = 0             # Disabled by default
-# max_delay_slots = 100             # Only relevant when throttle_delay_ms > 0
-```
-
-| Field | Type | Default | ENV Variable | Description |
-|-------|------|---------|---|-------------|
-| `enabled` | boolean | `false` | `PROXY_SECURITY_APIKEY_RATE_LIMIT_ENABLED` | Enable per-API-key rate limiting |
-| `requests_per_min` | integer | `60` | `PROXY_SECURITY_APIKEY_RATE_LIMIT_REQUESTS_PER_MIN` | Max requests per key per minute |
-| `ban_for_min` | integer | `5` | `PROXY_SECURITY_APIKEY_RATE_LIMIT_BAN_FOR_MIN` | Ban duration (minutes) |
-| `include_ip` | boolean | `false` | `PROXY_SECURITY_APIKEY_RATE_LIMIT_INCLUDE_IP` | Prefix rate-limit key with client IP |
-| `key_header` | string | `"x-goog-api-key"` | `PROXY_SECURITY_APIKEY_RATE_LIMIT_KEY_HEADER` | Header to extract API key from |
-| `throttle_delay_ms` | integer | `0` | `PROXY_SECURITY_APIKEY_RATE_LIMIT_THROTTLE_DELAY_MS` | Delay before 429 response (ms) |
-| `max_delay_slots` | integer | `100` | `PROXY_SECURITY_APIKEY_RATE_LIMIT_MAX_DELAY_SLOTS` | Max concurrent throttled responses |
-
-**Why these defaults:** Disabled by default because not all deployments use API keys. The 200 req/min config.toml value is more generous than the IP limit -- API keys represent provisioned clients expected to generate higher traffic. `include_ip = false` because a single key is typically one integration. `key_header` is pre-set for Google Cloud / Vertex AI.
-
-#### API-Key Request Matching
-
-```toml
-# Request matching rules -- rate limiting only applies to matching requests.
-# Multiple [[match]] entries use OR logic; fields within a rule use AND logic.
-# Host/Path support exact strings or /regex/ syntax.
-#
-# Example: Vertex AI endpoints
-# [[security.apikey_rate_limit.match]]
-# host = "/.*-aiplatform\\.googleapis\\.com/"
-#
-# [[security.apikey_rate_limit.match]]
-# path = "/\\/v1\\/projects\\/.*\\/(endpoints|publishers|models)\\//"
-```
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `host` | string | Host pattern -- exact string or `/regex/` |
-| `path` | string | Path pattern -- exact string or `/regex/` |
-| `header` | string | Header name that must be present |
-
-### Per-JWT Rate Limiting
-
-```toml
-[security.jwt_rate_limit]
-enabled = false                      # Opt-in -- activate when you need per-user rate limiting
-requests_per_min = 200               # Generous for authenticated users who have proven identity
-ban_for_min = 5                      # Standard ban duration
-include_ip = true                    # If a JWT is compromised, limits blast radius per IP+user pair
-# throttle_delay_ms = 0             # Disabled by default
-# max_delay_slots = 100             # Only relevant when throttle_delay_ms > 0
-```
-
-| Field | Type | Default | ENV Variable | Description |
-|-------|------|---------|---|-------------|
-| `enabled` | boolean | `false` | `PROXY_SECURITY_JWT_RATE_LIMIT_ENABLED` | Enable per-JWT rate limiting |
-| `requests_per_min` | integer | `60` | `PROXY_SECURITY_JWT_RATE_LIMIT_REQUESTS_PER_MIN` | Max requests per JWT `sub` per minute |
-| `ban_for_min` | integer | `5` | `PROXY_SECURITY_JWT_RATE_LIMIT_BAN_FOR_MIN` | Ban duration (minutes) |
-| `include_ip` | boolean | `false` | `PROXY_SECURITY_JWT_RATE_LIMIT_INCLUDE_IP` | Prefix rate-limit key with client IP |
-| `throttle_delay_ms` | integer | `0` | `PROXY_SECURITY_JWT_RATE_LIMIT_THROTTLE_DELAY_MS` | Delay before 429 response (ms) |
-| `max_delay_slots` | integer | `100` | `PROXY_SECURITY_JWT_RATE_LIMIT_MAX_DELAY_SLOTS` | Max concurrent throttled responses |
-
-**Why these defaults:** Disabled by default because it requires JWT auth to be configured first. The 200 req/min config.toml value is generous because authenticated users have proven their identity. `include_ip = true` (unlike the API-key limiter) because JWTs represent individual users -- if a token is stolen, the IP prefix isolates the attacker's traffic from the real user's bucket.
+lite-auth-proxy provides three independent rate limiter layers: per-IP, per-API-key, and per-JWT. For detailed scenarios and tuning, see the [Rate Limiting Guide](RATE-LIMITING.md).
 
 ## Authentication Configuration
 
@@ -298,45 +213,9 @@ org = "USER-ORG"
 
 ### API-Key Authentication
 
-API-Key authentication is independent of JWT (not a fallback):
+> **Plugin required:** The `[auth.api_key]` section requires the `apikey` plugin. The lite build does not include this plugin. See the [API-Key Plugin](PLUGINS.md#api-key-authentication-plugin) for the full configuration reference.
 
-```toml
-[auth.api_key]
-enabled = false
-name = "X-API-KEY"
-value = "{{ENV.API_KEY_SECRET}}"
-```
-
-| Field | Type | Default | ENV Variable | Description |
-|-------|------|---------|---|-------------|
-| `enabled` | boolean | `false` | `PROXY_AUTH_API_KEY_ENABLED` | Enable API-Key authentication |
-| `name` | string | `"X-API-KEY"` | `PROXY_AUTH_API_KEY_NAME` | HTTP header name to check for API key |
-| `value` | string | **required if enabled** | `PROXY_AUTH_API_KEY_VALUE` | Expected API key value (use env var substitution) |
-
-**API-Key Validation:**
-- Constant-time comparison prevents timing attacks
-- Returns 401 Unauthorized if key doesn't match
-
-#### API-Key Payload Injection
-
-Inject static headers when API-key authentication succeeds:
-
-```toml
-[auth.api_key.payload]
-service = "internal"
-source = "backend-job"
-team = "platform"
-```
-
-| Payload Key | Header Value | Result Header | ENV Variable | Description |
-|------------|---|---|---|-------------|
-| `service` | `"internal"` | `X-AUTH-SERVICE` | `PROXY_AUTH_API_KEY_PAYLOAD_SERVICE=internal` | Static header injected on auth success |
-| `source` | `"backend-job"` | `X-AUTH-SOURCE` | `PROXY_AUTH_API_KEY_PAYLOAD_SOURCE=backend-job` | Static header injected on auth success |
-| `team` | `"platform"` | `X-AUTH-TEAM` | `PROXY_AUTH_API_KEY_PAYLOAD_TEAM=platform` | Static header injected on auth success |
-
-**Payload Rules:**
-- Header name format: `{header_prefix}{UPPER(payload_key)}`
-- Example: `service = "internal"` → `X-AUTH-SERVICE: internal`
+API-Key authentication is independent of JWT (not a fallback). When the configured header is present, the key is validated via constant-time comparison. On success, static payload headers are injected into the request.
 
 ## Environment Variable Substitution
 
@@ -403,6 +282,14 @@ All configuration values can be overridden using environment variables with the 
 | `PROXY_ADMIN_JWT_AUDIENCE` | `admin.jwt.audience` | string |
 | `PROXY_ADMIN_JWT_ALLOWED_EMAILS` | `admin.jwt.allowed_emails` | comma-separated string |
 
+### Storage Overrides
+
+| Environment Variable | Config Field | Type |
+|---------------------|--------------|------|
+| `PROXY_STORAGE_BACKEND` | `storage.backend` | string |
+| `PROXY_STORAGE_PROJECT_ID` | `storage.project_id` | string |
+| `PROXY_STORAGE_COLLECTION_PREFIX` | `storage.collection_prefix` | string |
+
 ### Authentication Overrides
 
 | Environment Variable | Config Field | Type |
@@ -419,7 +306,7 @@ All configuration values can be overridden using environment variables with the 
 
 ## Default Configuration
 
-The default configuration file (`config/config.toml`) comes pre-configured for quick setup. Here's what's enabled by default:
+The default configuration file (`config/config-flex.toml`) comes pre-configured for quick setup. Here's what's enabled by default:
 
 ### What's Included by Default
 
@@ -463,10 +350,10 @@ The easiest way to enable API-Key authentication is via environment variables:
 # Method 1: Using environment variables (overrides config)
 export PROXY_AUTH_API_KEY_ENABLED=true
 export API_KEY_SECRET="your-secret-key-value"
-./bin/lite-auth-proxy
+./bin/flex-auth-proxy
 
 # Method 2: Using TOML configuration
-# Edit config/config.toml:
+# Edit config/config-flex.toml:
 [auth.api_key]
 enabled = true
 name = "X-API-KEY"
@@ -569,33 +456,26 @@ value = "{{ENV.API_KEY_SECRET}}"
 
 ## Admin Control-Plane
 
-The admin API enables runtime traffic control (throttle, block, allow) without redeploying. It is **disabled by default** and has zero overhead when off.
+> **Plugin required:** The `[admin]` section requires the `admin` plugin. The lite build does not include this plugin. See the [Admin Plugin](PLUGINS.md#admin-plugin) for the full configuration reference.
 
-For full documentation — including endpoints, rule lifecycle, rate limiter targeting, and serverless caveats — see the **[Admin Control Plane Guide](ADMIN.md)**.
+The admin API enables runtime traffic control (throttle, block, allow) without redeploying. It is **disabled by default** and has zero overhead when off. For endpoints, rule lifecycle, and serverless caveats see the [Admin Control Plane Guide](ADMIN.md).
 
-**Minimum configuration:**
+> **Rule persistence:** Without a storage plugin, admin rules are held in process memory and lost on restart. Use the [Firestore storage plugin](PLUGINS.md#storage-firestore-plugin) for persistent cross-instance rule sync, or `PROXY_THROTTLE_RULES` as a lightweight alternative.
+
+---
+
+## Storage
+
+> **Plugin required:** The `[storage]` section requires a storage plugin (e.g. `storage-firestore`). See the [Storage Plugin](PLUGINS.md#storage-firestore-plugin) for the full configuration reference and GCP setup.
+
+The storage backend provides persistent `RuleStore` and `KeyValueStore` implementations. When configured, admin rules survive process restarts and are synchronized across Cloud Run instances in real-time.
 
 ```toml
-[admin]
-enabled = true
-
-[admin.jwt]
-issuer         = "https://accounts.google.com"
-audience       = "https://your-proxy.run.app"
-allowed_emails = ["sa@my-project.iam.gserviceaccount.com"]
+[storage]
+backend = "firestore"              # "firestore" or "" (no storage)
+project_id = ""                    # Defaults to GOOGLE_CLOUD_PROJECT
+collection_prefix = "proxy"        # Firestore collection prefix
 ```
-
-| Field | Type | Default | ENV Variable | Description |
-|-------|------|---------|---|-------------|
-| `admin.enabled` | boolean | `false` | `PROXY_ADMIN_ENABLED` | Register `/admin/control` and `/admin/status` routes |
-| `admin.jwt.issuer` | string | `"https://accounts.google.com"` | `PROXY_ADMIN_JWT_ISSUER` | Expected OIDC issuer for admin identity tokens |
-| `admin.jwt.audience` | string | — | `PROXY_ADMIN_JWT_AUDIENCE` | Expected audience — set to the proxy's own Cloud Run URL |
-| `admin.jwt.allowed_emails` | array[string] | `[]` | `PROXY_ADMIN_JWT_ALLOWED_EMAILS` | Service account emails allowed to call the admin API |
-| `admin.jwt.filters` | map[string]string | `{}` | — | Require specific JWT claim values (e.g. `hd = "corp.com"`) |
-| `admin.jwt.tolerance_secs` | integer | `30` | `PROXY_ADMIN_JWT_TOLERANCE_SECS` | Clock skew tolerance for admin token validation |
-| `admin.jwt.cache_ttl_mins` | integer | `1440` | `PROXY_ADMIN_JWT_CACHE_TTL_MINS` | How long to cache validated admin tokens (minutes) |
-
-> **Important:** Admin rules are stored in-memory only and are lost on process restart. In serverless environments (Cloud Run, Fargate), use `PROXY_THROTTLE_RULES` to persist rules across instance restarts. See [Serverless Caveat](ADMIN.md#serverless-caveat-cloud-run-and-ephemeral-instances).
 
 ---
 
@@ -607,11 +487,34 @@ The proxy validates configuration at startup and exits with an error if:
 - Field types are incorrect (e.g., string for integer field)
 - URLs are malformed
 - Port numbers are out of range (1-65535)
-- Both JWT and API-Key are disabled but `include_paths` requires auth
+- A plugin-gated config section is enabled but the required plugin is not compiled in
+
+### Plugin Availability Check
+
+When plugins are registered (full build or custom build), the proxy checks that every enabled config section has its backing plugin. If not, it fails with a message like:
+
+```
+rate limiting is configured but the ratelimit plugin is not compiled in —
+use the full build image or add the plugin import
+```
+
+This prevents silent misconfiguration where a feature appears enabled in the config but has no effect.
+
+## Cross-Plugin Scenarios
+
+### Rate-Limit-Only Mode
+
+When both `auth.jwt.enabled` and `auth.api_key.enabled` are `false`, the proxy operates in **rate-limit-only mode**: all requests are forwarded without credential checks while rate limiting (if the `ratelimit` plugin is present) and admin dynamic rules (if the `admin` plugin is present) remain active. This is useful when only DDoS protection is needed without authentication.
+
+### Admin + Storage for Multi-Instance Deployments
+
+When both the `admin` and `storage-firestore` plugins are compiled in and `[storage]` is configured, admin rules are persisted to Firestore and synchronized across all Cloud Run instances. Without the storage plugin, rules are per-instance only. See the [Deployment Model](PLUGINS.md#deployment-model).
 
 ## See Also
 
+- [Plugin Guide](PLUGINS.md) — Plugin-specific configuration reference
 - [Admin Control Plane](ADMIN.md)
+- [Rate Limiting Guide](RATE-LIMITING.md)
 - [Environment Variables Guide](ENVIRONMENT.md)
 - [API Documentation](API.md)
 - [Deployment Guide](DEPLOYMENT.md)

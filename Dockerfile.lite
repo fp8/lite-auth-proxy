@@ -1,0 +1,36 @@
+# -- Build stage --
+FROM golang:1.24-alpine AS builder
+
+# Build arguments
+ARG VERSION=0.0.1
+
+# Install dependencies
+RUN apk add --no-cache ca-certificates git
+
+WORKDIR /app
+
+# Copy go mod files and download dependencies
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy source code
+COPY . .
+
+# Build the lite binary (no plugins)
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+    -ldflags="-s -w -X main.Version=${VERSION}" \
+    -o /lite-auth-proxy ./cmd/lite
+
+# -- Runtime stage --
+FROM gcr.io/distroless/static-debian12:nonroot
+
+ARG VERSION=0.0.1
+
+LABEL org.opencontainers.image.version=${VERSION}
+
+COPY --from=builder /lite-auth-proxy /lite-auth-proxy
+COPY config/config-lite.toml /config/config.toml
+
+EXPOSE 8888
+
+ENTRYPOINT ["/lite-auth-proxy"]
