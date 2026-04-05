@@ -38,7 +38,7 @@ func TestValidateConfig_NoBackend(t *testing.T) {
 func TestValidateConfig_MissingProjectID(t *testing.T) {
 	p := &Plugin{}
 	cfg := &config.Config{
-		Storage: config.StorageConfig{Backend: "firestore"},
+		Storage: config.StorageConfig{Enabled: true},
 	}
 	t.Setenv("GOOGLE_CLOUD_PROJECT", "")
 	if err := p.ValidateConfig(cfg); err == nil {
@@ -50,8 +50,8 @@ func TestValidateConfig_InvalidPrefix(t *testing.T) {
 	p := &Plugin{}
 	cfg := &config.Config{
 		Storage: config.StorageConfig{
-			Backend:          "firestore",
-			ProjectID:        "test-project",
+			Enabled:          true,
+ProjectID:        "test-project",
 			CollectionPrefix: "INVALID PREFIX!",
 		},
 	}
@@ -64,8 +64,8 @@ func TestValidateConfig_Valid(t *testing.T) {
 	p := &Plugin{}
 	cfg := &config.Config{
 		Storage: config.StorageConfig{
-			Backend:          "firestore",
-			ProjectID:        "test-project",
+			Enabled:          true,
+ProjectID:        "test-project",
 			CollectionPrefix: "my-proxy",
 		},
 	}

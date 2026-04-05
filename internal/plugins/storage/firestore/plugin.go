@@ -28,7 +28,7 @@ func (p *Plugin) Name() string  { return "storage-firestore" }
 func (p *Plugin) Priority() int { return 5 }
 
 func (p *Plugin) ValidateConfig(cfg *config.Config) error {
-	if cfg.Storage.Backend != "firestore" {
+	if !cfg.Storage.Enabled {
 		return nil
 	}
 	projectID := resolveProjectID(cfg)
@@ -53,7 +53,14 @@ func (p *Plugin) Open(cfg *config.Config, logger *slog.Logger) error {
 	}
 
 	ctx := context.Background()
-	client, err := firestore.NewClient(ctx, projectID)
+	dbname := cfg.Storage.Dbname
+	var client *firestore.Client
+	var err error
+	if dbname != "" {
+		client, err = firestore.NewClientWithDatabase(ctx, projectID, dbname)
+	} else {
+		client, err = firestore.NewClient(ctx, projectID)
+	}
 	if err != nil {
 		return fmt.Errorf("failed to create Firestore client: %w", err)
 	}
@@ -67,7 +74,11 @@ func (p *Plugin) Open(cfg *config.Config, logger *slog.Logger) error {
 	p.prefix = prefix
 	p.logger = logger
 
-	logger.Info("Firestore storage connected", "project", projectID, "prefix", prefix)
+	logArgs := []any{"project", projectID, "prefix", prefix}
+	if dbname != "" {
+		logArgs = append(logArgs, "database", dbname)
+	}
+	logger.Info("Firestore storage connected", logArgs...)
 	return nil
 }
 

@@ -23,8 +23,9 @@ type Config struct {
 
 // StorageConfig contains settings for the persistent storage backend.
 type StorageConfig struct {
-	Backend          string `toml:"backend"`           // e.g. "firestore"; empty = in-memory
+	Enabled          bool   `toml:"enabled"`           // Enable persistent storage backend
 	ProjectID        string `toml:"project_id"`        // GCP project ID (defaults to GOOGLE_CLOUD_PROJECT)
+	Dbname           string `toml:"dbname"`            // Firestore database name (defaults to "(default)")
 	CollectionPrefix string `toml:"collection_prefix"` // Firestore collection prefix (default: "proxy")
 }
 
@@ -411,11 +412,18 @@ func applyEnvOverrides(config *Config) error {
 	config.Auth.APIKey.Payload = applyJWTMapOverrides("PROXY_AUTH_API_KEY_PAYLOAD_", config.Auth.APIKey.Payload)
 
 	// Storage overrides
-	if val := os.Getenv("PROXY_STORAGE_BACKEND"); val != "" {
-		config.Storage.Backend = val
+	if val := os.Getenv("PROXY_STORAGE_ENABLED"); val != "" {
+		enabled, err := strconv.ParseBool(val)
+		if err != nil {
+			return fmt.Errorf("invalid PROXY_STORAGE_ENABLED: %w", err)
+		}
+		config.Storage.Enabled = enabled
 	}
 	if val := os.Getenv("PROXY_STORAGE_PROJECT_ID"); val != "" {
 		config.Storage.ProjectID = val
+	}
+	if val := os.Getenv("PROXY_STORAGE_DBNAME"); val != "" {
+		config.Storage.Dbname = val
 	}
 	if val := os.Getenv("PROXY_STORAGE_COLLECTION_PREFIX"); val != "" {
 		config.Storage.CollectionPrefix = val

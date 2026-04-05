@@ -132,8 +132,9 @@ export PROXY_AUTH_API_KEY_VALUE=my-secret-key-123
 
 | Variable | Type | Default | Description |
 |----------|------|---------|-------------|
-| `PROXY_STORAGE_BACKEND` | string | `""` | Storage backend name (`"firestore"` or empty) |
+| `PROXY_STORAGE_ENABLED` | boolean | `false` | Enable persistent storage backend (Firestore) |
 | `PROXY_STORAGE_PROJECT_ID` | string | `GOOGLE_CLOUD_PROJECT` | GCP project ID for storage |
+| `PROXY_STORAGE_DBNAME` | string | `"(default)"` | Firestore database name (e.g. `"flex-auth-proxy"`) |
 | `PROXY_STORAGE_COLLECTION_PREFIX` | string | `"proxy"` | Firestore collection prefix (`[a-z0-9-]` only) |
 
 **Example:**

@@ -286,8 +286,9 @@ All configuration values can be overridden using environment variables with the 
 
 | Environment Variable | Config Field | Type |
 |---------------------|--------------|------|
-| `PROXY_STORAGE_BACKEND` | `storage.backend` | string |
+| `PROXY_STORAGE_ENABLED` | `storage.enabled` | boolean |
 | `PROXY_STORAGE_PROJECT_ID` | `storage.project_id` | string |
+| `PROXY_STORAGE_DBNAME` | `storage.dbname` | string |
 | `PROXY_STORAGE_COLLECTION_PREFIX` | `storage.collection_prefix` | string |
 
 ### Authentication Overrides

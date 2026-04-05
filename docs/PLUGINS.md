@@ -211,17 +211,17 @@ Provides persistent `RuleStore` and `KeyValueStore` implementations backed by Go
 
 ```toml
 [storage]
-backend = "firestore"                # Empty string = no storage (default)
-
-# Firestore-specific settings (only used when backend = "firestore")
-project_id = ""                      # Defaults to GOOGLE_CLOUD_PROJECT env var
-collection_prefix = "proxy"          # Collections: {prefix}-rules, {prefix}-apikeys
+enabled = false                      # Enable persistent storage backend (Firestore)
+# project_id = ""                    # Defaults to GOOGLE_CLOUD_PROJECT env var
+# dbname = ""                        # Firestore database name (defaults to "(default)")
+# collection_prefix = "proxy"        # Collections: {prefix}-rules, {prefix}-apikeys
 ```
 
 | Field | Type | Default | ENV Variable | Description |
 |-------|------|---------|---|-------------|
-| `storage.backend` | string | `""` | `PROXY_STORAGE_BACKEND` | Storage backend name (`"firestore"` or empty) |
+| `storage.enabled` | boolean | `false` | `PROXY_STORAGE_ENABLED` | Enable persistent storage backend (Firestore) |
 | `storage.project_id` | string | `GOOGLE_CLOUD_PROJECT` | `PROXY_STORAGE_PROJECT_ID` | GCP project ID |
+| `storage.dbname` | string | `"(default)"` | `PROXY_STORAGE_DBNAME` | Firestore database name (e.g. `"flex-auth-proxy"`) |
 | `storage.collection_prefix` | string | `"proxy"` | `PROXY_STORAGE_COLLECTION_PREFIX` | Firestore collection prefix (`[a-z0-9-]` only) |
 
 ### How It Works

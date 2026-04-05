@@ -127,7 +127,7 @@ func NewHandlerWithDeps(cfg *config.Config, logger *slog.Logger) (http.Handler, 
 
 		// Phase 2: Storage backend (optional, replaces defaults).
 		storagePersist := false
-		if sb := plugin.StorageBackend(); sb != nil && cfg.Storage.Backend != "" {
+		if sb := plugin.StorageBackend(); sb != nil && cfg.Storage.Enabled {
 			if err := sb.Open(cfg, logger); err != nil {
 				return nil, nil, fmt.Errorf("storage plugin %q: open: %w", sb.Name(), err)
 			}
@@ -348,9 +348,8 @@ func validatePluginAvailability(cfg *config.Config) error {
 		}
 	}
 
-	if cfg.Storage.Backend != "" && plugin.StorageBackend() == nil {
-		return fmt.Errorf("storage backend %q is configured but the storage-%s plugin is not compiled in — use the full build image or add the plugin import",
-			cfg.Storage.Backend, cfg.Storage.Backend)
+	if cfg.Storage.Enabled && plugin.StorageBackend() == nil {
+		return fmt.Errorf("storage is enabled but no storage plugin is compiled in — use the full build image or add the plugin import")
 	}
 
 	return nil
