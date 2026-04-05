@@ -16,6 +16,7 @@ Development guide for AI coding assistants working in this repository.
   - `docs/RATE-LIMITING.md` — rate limiting guide
   - `docs/ENVIRONMENT.md` — env var overrides
   - `docs/API.md` — HTTP endpoints and admin API
+  - `docs/ADMIN.md` — Admin control plane, rule lifecycle, serverless caveats
   - `docs/DEPLOYMENT.md` — Docker, Cloud Run, sidecar setup
   - `docs/DEVELOPMENT.md` — dev setup, testing, debugging
 

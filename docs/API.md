@@ -14,103 +14,16 @@
 
 ## Admin Endpoints
 
-Available only when `admin.enabled = true`. All admin endpoints require an `Authorization: Bearer <GCP-identity-token>` header from a service account listed in `admin.jwt.allowed_emails`.
+Available only when `admin.enabled = true`. For full documentation on the admin control plane — including configuration, authentication, rule lifecycle, serverless caveats, and examples — see the [Admin Control Plane Guide](ADMIN.md).
 
-### POST /admin/control
+**Quick reference:**
 
-Manages dynamic rate-limit rules at runtime.
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/admin/control` | `POST` | Manage dynamic rules (`set-rule`, `remove-rule`, `remove-all`) |
+| `/admin/status` | `GET` | Snapshot of active rules and rate limiter states |
 
-**Request body:**
-
-```json
-{
-  "command": "<set-rule | remove-rule | remove-all>",
-  "rule": { ... },   // required for set-rule
-  "ruleId": "..."    // required for remove-rule
-}
-```
-
-**`set-rule` payload:**
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `ruleId` | string | yes | Unique rule identifier |
-| `targetHost` | string | yes | Exact `Host` header value to match |
-| `action` | string | yes | `throttle`, `block`, or `allow` |
-| `maxRPM` | integer | when `throttle` | Maximum requests per minute |
-| `pathPattern` | string | no | Path prefix or glob to restrict the rule (e.g. `/v1/projects/`) |
-| `rateByKey` | boolean | no | `true` = per-caller-identity buckets; `false` (default) = global counter |
-| `limiter` | string | no | Target a specific rate limiter: `ip`, `apikey`, or `jwt`. When set with `action=throttle`, the rule also updates the targeted limiter's RPM, delay, and slot settings. |
-| `throttleDelayMs` | integer | no | Millisecond delay before returning 429; `0` = no change |
-| `maxDelaySlots` | integer | no | Max concurrent throttled (delayed) responses; `0` = no change |
-| `durationSeconds` | integer | yes | Rule lifetime in seconds; rule auto-expires afterwards |
-
-**`set-rule` response (200):**
-```json
-{"ruleId":"sg-throttle","status":"active","expiresAt":"2026-03-30T15:10:00Z"}
-```
-
-**`remove-rule` / `remove-all` response (200):**
-```json
-{"status":"ok","rulesRemoved":1}
-```
-
-**Error responses:**
-
-| Status | Condition |
-|--------|-----------|
-| `401` | Missing/invalid identity token, or email not in `allowed_emails` |
-| `400` | Invalid JSON, unknown command, or missing required fields |
-| `404` | `ruleId` not found (remove-rule only) |
-
----
-
-### GET /admin/status
-
-Returns a snapshot of all active rules and the rate limiter states.
-
-**Response (200):**
-```json
-{
-  "rules": [
-    {
-      "ruleId": "sg-throttle-my-api",
-      "targetHost": "my-api.run.app",
-      "action": "throttle",
-      "maxRPM": 50,
-      "currentRPM": 23,
-      "status": "active",
-      "expiresAt": "2026-03-30T15:10:00Z"
-    }
-  ],
-  "rateLimiters": {
-    "ip": {
-      "name": "ip",
-      "enabled": true,
-      "requestsPerMin": 60,
-      "activeEntries": 15,
-      "throttleDelay": "100ms",
-      "maxDelaySlots": 100
-    },
-    "apikey": {
-      "name": "apikey",
-      "enabled": true,
-      "requestsPerMin": 200,
-      "activeEntries": 3
-    },
-    "jwt": {
-      "name": "jwt",
-      "enabled": false,
-      "requestsPerMin": 60,
-      "activeEntries": 0
-    }
-  }
-}
-```
-
-- `rules` is an empty array when no rules are active.
-- `rateLimiters` contains a key for each configured limiter (`ip`, `apikey`, `jwt`) with its current state.
-- `throttleDelay` and `maxDelaySlots` are omitted when throttle delay is not configured.
+All admin endpoints require `Authorization: Bearer <GCP-identity-token>` from an account listed in `admin.jwt.allowed_emails` or matching `admin.jwt.filters`.
 
 ## Authentication
 

@@ -93,8 +93,9 @@ flowchart TD
 
 - **[Configuration Guide](docs/CONFIGURATION.md)** — Complete configuration reference with all options, filters, and mappings
 - **[Rate Limiting Guide](docs/RATE-LIMITING.md)** — Per-IP, per-API-key, and per-JWT rate limiting, throttle delay, and dynamic rules
+- **[Admin Control Plane](docs/ADMIN.md)** — Runtime traffic management, rule lifecycle, and serverless caveats
 - **[Environment Variables Guide](docs/ENVIRONMENT.md)** — All environment variables, substitution syntax, and precedence rules
-- **[API Documentation](docs/API.md)** — HTTP endpoints, admin control API, authentication flow, and error responses
+- **[API Documentation](docs/API.md)** — HTTP endpoints, authentication flow, and error responses
 - **[Deployment Guide](docs/DEPLOYMENT.md)** — Docker builds, Cloud Build, Cloud Run, sidecar pattern, and production setup
 - **[Development Guide](docs/DEVELOPMENT.md)** — Setup, testing, debugging, and contribution guidelines
 - **[AGENTS.md](AGENTS.md)** — Dense technical specification for LLM consumption

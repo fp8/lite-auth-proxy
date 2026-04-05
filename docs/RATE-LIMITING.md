@@ -210,7 +210,7 @@ skip_if_jwt_identified = false  # Enforce IP ceiling even for authenticated user
 
 ## Dynamic Rules via Admin API
 
-When the [Admin Control API](API.md#admin-endpoints) is enabled, you can adjust rate limiting at runtime without redeploying:
+When the [Admin Control Plane](ADMIN.md) is enabled, you can adjust rate limiting at runtime without redeploying:
 
 ```bash
 # Throttle a backend to 50 RPM for 10 minutes
@@ -254,7 +254,7 @@ Supported actions: `throttle` (cap RPM), `block` (drop all), `allow` (bypass per
 
 ### Rule Persistence
 
-Active throttle rules can survive Cloud Run instance restarts via the `PROXY_THROTTLE_RULES` environment variable. See the [Configuration Guide](CONFIGURATION.md#startup-rule-persistence) for details.
+Active throttle rules can survive Cloud Run instance restarts via the `PROXY_THROTTLE_RULES` environment variable. See the [Admin Control Plane Guide](ADMIN.md#startup-rule-persistence) for details.
 
 ## Scenarios
 
@@ -443,5 +443,6 @@ skip_if_jwt_identified = false     # No JWT auth, so this flag has no effect —
 ## See Also
 
 - [Configuration Guide](CONFIGURATION.md) -- Full configuration reference
-- [API Documentation](API.md) -- Admin endpoints for runtime rule management
+- [Admin Control Plane](ADMIN.md) -- Runtime rule management, serverless caveats
+- [API Documentation](API.md) -- HTTP endpoints and error responses
 - [Environment Variables Guide](ENVIRONMENT.md) -- All env var overrides

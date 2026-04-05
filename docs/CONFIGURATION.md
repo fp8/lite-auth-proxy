@@ -571,10 +571,11 @@ value = "{{ENV.API_KEY_SECRET}}"
 
 The admin API enables runtime traffic control (throttle, block, allow) without redeploying. It is **disabled by default** and has zero overhead when off.
 
-**Minimum configuration** (`issuer`, `audience`, and at least one of `allowed_emails` or `filters` are required):
+For full documentation — including endpoints, rule lifecycle, rate limiter targeting, and serverless caveats — see the **[Admin Control Plane Guide](ADMIN.md)**.
+
+**Minimum configuration:**
 
 ```toml
-# Option A — restrict by email
 [admin]
 enabled = true
 
@@ -582,36 +583,6 @@ enabled = true
 issuer         = "https://accounts.google.com"
 audience       = "https://your-proxy.run.app"
 allowed_emails = ["sa@my-project.iam.gserviceaccount.com"]
-
-# Option B — restrict by claim (e.g. Google Workspace hosted domain)
-[admin]
-enabled = true
-
-[admin.jwt]
-issuer   = "https://accounts.google.com"
-audience = "https://your-proxy.run.app"
-
-[admin.jwt.filters]
-hd = "your-domain.com"
-```
-
-All available fields:
-
-```toml
-[admin]
-enabled = false   # Set to true to register /admin/* routes
-
-[admin.jwt]
-issuer        = "https://accounts.google.com"
-audience      = "https://your-proxy.run.app"   # The proxy's own Cloud Run URL
-allowed_emails = [
-  "sg-killswitch@your-project.iam.gserviceaccount.com",
-]
-
-# Alternative: restrict by arbitrary JWT claim instead of (or in addition to) allowed_emails
-[admin.jwt.filters]
-# email = "admin@example.com"
-# hd    = "your-domain.com"
 ```
 
 | Field | Type | Default | ENV Variable | Description |
@@ -619,37 +590,12 @@ allowed_emails = [
 | `admin.enabled` | boolean | `false` | `PROXY_ADMIN_ENABLED` | Register `/admin/control` and `/admin/status` routes |
 | `admin.jwt.issuer` | string | `"https://accounts.google.com"` | `PROXY_ADMIN_JWT_ISSUER` | Expected OIDC issuer for admin identity tokens |
 | `admin.jwt.audience` | string | — | `PROXY_ADMIN_JWT_AUDIENCE` | Expected audience — set to the proxy's own Cloud Run URL |
-| `admin.jwt.allowed_emails` | array[string] | `[]` | `PROXY_ADMIN_JWT_ALLOWED_EMAILS` | Comma-separated list of service account emails allowed to call the admin API |
-| `admin.jwt.filters` | map[string]string | `{}` | — | Require specific JWT claim values (e.g. `hd = "corp.com"`). At least one of `allowed_emails` or `filters` is required when admin is enabled |
+| `admin.jwt.allowed_emails` | array[string] | `[]` | `PROXY_ADMIN_JWT_ALLOWED_EMAILS` | Service account emails allowed to call the admin API |
+| `admin.jwt.filters` | map[string]string | `{}` | — | Require specific JWT claim values (e.g. `hd = "corp.com"`) |
 | `admin.jwt.tolerance_secs` | integer | `30` | `PROXY_ADMIN_JWT_TOLERANCE_SECS` | Clock skew tolerance for admin token validation |
 | `admin.jwt.cache_ttl_mins` | integer | `1440` | `PROXY_ADMIN_JWT_CACHE_TTL_MINS` | How long to cache validated admin tokens (minutes) |
 
-**Authentication model:** Admin callers obtain a GCP service account identity token (ID token) with the proxy's Cloud Run URL as the audience. The proxy validates this token against Google's OIDC JWKS endpoint (same infrastructure as the main auth pipeline) and checks the `email` claim against `allowed_emails` and/or any `filters` claim requirements. No additional secrets are needed.
-
-**Access control:** at least one of `allowed_emails` or `filters` must be set when `admin.enabled = true`. Both can be used together — the token must satisfy all configured checks.
-
-### Startup Rule Persistence
-
-When `admin.enabled = true`, the proxy reads `PROXY_THROTTLE_RULES` at startup and pre-populates the rule store before serving any traffic. This prevents a gap in throttling when Cloud Run scales up a new instance during an active billing spike.
-
-```bash
-# ShockGuard or your automation sets this on the Cloud Run service:
-PROXY_THROTTLE_RULES='[
-  {
-    "ruleId":          "sg-throttle-vertex",
-    "targetHost":      "-aiplatform.googleapis.com",
-    "action":          "throttle",
-    "maxRPM":          200,
-    "pathPattern":     "/v1/projects/",
-    "rateByKey":       true,
-    "expiresAt":       "2026-03-30T15:10:00Z"
-  }
-]'
-```
-
-- `expiresAt` is an absolute RFC 3339 timestamp. Rules past their expiry are silently skipped on load.
-- An empty value or missing variable results in no rules loaded (not an error).
-- A malformed JSON value logs a warning but does **not** prevent the proxy from starting.
+> **Important:** Admin rules are stored in-memory only and are lost on process restart. In serverless environments (Cloud Run, Fargate), use `PROXY_THROTTLE_RULES` to persist rules across instance restarts. See [Serverless Caveat](ADMIN.md#serverless-caveat-cloud-run-and-ephemeral-instances).
 
 ---
 
@@ -665,6 +611,7 @@ The proxy validates configuration at startup and exits with an error if:
 
 ## See Also
 
+- [Admin Control Plane](ADMIN.md)
 - [Environment Variables Guide](ENVIRONMENT.md)
 - [API Documentation](API.md)
 - [Deployment Guide](DEPLOYMENT.md)
