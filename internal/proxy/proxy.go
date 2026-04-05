@@ -175,7 +175,7 @@ func NewHandlerWithDeps(cfg *config.Config, logger *slog.Logger) (http.Handler, 
 		DynamicRuleCheck(ruleChecker),
 		ApiKeyRateLimit(apikeyLimiter, apiKeyMatcher, cfg.Security.ApiKeyRateLimit.KeyHeader, cfg.Security.ApiKeyRateLimit.IncludeIP),
 		JwtRateLimit(jwtLimiter, cfg.Security.JwtRateLimit.IncludeIP),
-		IpRateLimit(ipLimiter),
+		IpRateLimit(ipLimiter, cfg.Security.RateLimit.SkipIfJwtIdentified == nil || *cfg.Security.RateLimit.SkipIfJwtIdentified),
 	)
 
 	healthPath := cfg.Server.HealthCheck.Path

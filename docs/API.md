@@ -37,9 +37,12 @@ Manages dynamic rate-limit rules at runtime.
 | `ruleId` | string | yes | Unique rule identifier |
 | `targetHost` | string | yes | Exact `Host` header value to match |
 | `action` | string | yes | `throttle`, `block`, or `allow` |
-| `maxRPM` | integer | when `throttle` | Maximum requests per minute (global or per-caller) |
+| `maxRPM` | integer | when `throttle` | Maximum requests per minute |
 | `pathPattern` | string | no | Path prefix or glob to restrict the rule (e.g. `/v1/projects/`) |
 | `rateByKey` | boolean | no | `true` = per-caller-identity buckets; `false` (default) = global counter |
+| `limiter` | string | no | Target a specific rate limiter: `ip`, `apikey`, or `jwt`. When set with `action=throttle`, the rule also updates the targeted limiter's RPM, delay, and slot settings. |
+| `throttleDelayMs` | integer | no | Millisecond delay before returning 429; `0` = no change |
+| `maxDelaySlots` | integer | no | Max concurrent throttled (delayed) responses; `0` = no change |
 | `durationSeconds` | integer | yes | Rule lifetime in seconds; rule auto-expires afterwards |
 
 **`set-rule` response (200):**
@@ -64,7 +67,7 @@ Manages dynamic rate-limit rules at runtime.
 
 ### GET /admin/status
 
-Returns a snapshot of all active rules and the Vertex AI bucket state.
+Returns a snapshot of all active rules and the rate limiter states.
 
 **Response (200):**
 ```json
@@ -80,20 +83,34 @@ Returns a snapshot of all active rules and the Vertex AI bucket state.
       "expiresAt": "2026-03-30T15:10:00Z"
     }
   ],
-  "vertexAI": {
-    "mode": "per-key",
-    "maxRPM": 200,
-    "keys": [
-      {"identity": "k:a3f8b2c1d4e5", "currentRPM": 87}
-    ],
-    "status": "active"
+  "rateLimiters": {
+    "ip": {
+      "name": "ip",
+      "enabled": true,
+      "requestsPerMin": 60,
+      "activeEntries": 15,
+      "throttleDelay": "100ms",
+      "maxDelaySlots": 100
+    },
+    "apikey": {
+      "name": "apikey",
+      "enabled": true,
+      "requestsPerMin": 200,
+      "activeEntries": 3
+    },
+    "jwt": {
+      "name": "jwt",
+      "enabled": false,
+      "requestsPerMin": 60,
+      "activeEntries": 0
+    }
   }
 }
 ```
 
 - `rules` is an empty array when no rules are active.
-- `vertexAI` is `null` when the Vertex AI bucket is not enabled.
-- In `global` mode, `vertexAI` includes `currentRPM` instead of `keys`.
+- `rateLimiters` contains a key for each configured limiter (`ip`, `apikey`, `jwt`) with its current state.
+- `throttleDelay` and `maxDelaySlots` are omitted when throttle delay is not configured.
 
 ## Authentication
 
@@ -117,6 +134,7 @@ All error responses are JSON with `Content-Type: application/json`.
 
 | Scenario | Status | Response |
 |----------|--------|----------|
+| Request body too large | 413 | `{"error":"request_too_large","message":"request body exceeds size limit"}` |
 | Missing credentials | 401 | `{"error":"unauthorized","message":"missing credentials"}` |
 | Invalid JWT format / missing kid | 401 | `{"error":"unauthorized","message":"invalid token format"}` |
 | JWT signature failure | 401 | `{"error":"unauthorized","message":"invalid token signature"}` |
@@ -133,11 +151,14 @@ All error responses are JSON with `Content-Type: application/json`.
 
 ```
 HTTP Request
+  -> Request Logger         (structured logging)
+  -> Body Limiter           (reject oversized requests)
   -> Header Sanitization    (strip X-AUTH-* headers)
   -> Path Filter            (include/exclude patterns)
   -> Dynamic Rule Check     (admin throttle/block/allow — skipped when admin disabled)
-  -> Vertex AI Rate Limit   (per-caller or global — skipped when admin disabled)
-  -> Per-IP Rate Limit      (if security.rate_limit.enabled)
+  -> API-Key Rate Limit     (per-key limit with optional IP compound key — when match rules apply)
+  -> JWT Rate Limit         (per-subject limit with optional IP compound key)
+  -> Per-IP Rate Limit      (if security.rate_limit.enabled; skipped when JWT already identified)
   -> Auth                   (JWT or API-Key)
   -> Claim Filter           (JWT only)
   -> Claim Mapping          -> Header Injection

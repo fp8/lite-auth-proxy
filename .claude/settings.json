@@ -1,0 +1,52 @@
+{
+  "permissions": {
+    "defaultMode": "acceptEdits",
+    "allow": [
+      "Read(**)",
+      "Write(**)",
+      "Edit(**)",
+      "MultiEdit(**)",
+      "Glob",
+      "Grep",
+      "LS",
+      "Bash(grep *)",
+      "Bash(find *)",
+      "Bash(ls *)",
+      "Bash(cat *)",
+      "Bash(echo *)",
+      "Bash(mkdir *)",
+      "Bash(touch *)",
+      "Bash(cp *)",
+      "Bash(mv *)",
+      "Bash(wc *)",
+      "Bash(awk *)",
+      "Bash(sed *)",
+      "Bash(sort *)",
+      "Bash(head *)",
+      "Bash(tail *)",
+      "Bash(wait)",
+      "Bash(docker *)",
+      "Bash(source *)",
+      "Bash(git *)",
+      "Bash(gh *)",
+      "Bash(go *)",
+      "Bash(make *)",
+      "Bash(gcloud * list*)",
+      "Bash(gcloud * describe*)",
+      "Bash(gcloud * get-iam-policy*)",
+      "Bash(gcloud info*)",
+      "Bash(gcloud config get-value*)",
+      "Bash(gcloud config list*)",
+      "Bash(gcloud auth list*)",
+      "Bash(gcloud auth print-identity-token*)",
+      "Bash(gcloud auth print-access-token*)"
+    ],
+    "deny": [
+      "Bash(rm -rf *)",
+      "Bash(sudo *)",
+      "Bash(curl *)",
+      "Bash(wget *)",
+      "Read(../**)"
+    ]
+  }
+}

@@ -1,9 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(go build:*)",
-      "Bash(go test:*)",
-      "Bash(grep -n \"func writeRateLimitResponse\" /Users/linm/dev/fp8/lite-auth-proxy/internal/proxy/*.go)"
-    ]
-  }
-}

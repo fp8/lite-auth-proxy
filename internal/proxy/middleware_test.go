@@ -52,7 +52,7 @@ func TestShouldAuthenticateIncludeMatch(t *testing.T) {
 
 func TestIpRateLimitBlocksWhenLimited(t *testing.T) {
 	limiter := newTestLimiter(1) // 1 RPM
-	mw := IpRateLimit(limiter)
+	mw := IpRateLimit(limiter, false)
 
 	h := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -80,7 +80,7 @@ func TestIpRateLimitBlocksWhenLimited(t *testing.T) {
 
 func TestIpRateLimitBlocksAuthRequiredPaths(t *testing.T) {
 	limiter := newTestLimiter(1) // 1 RPM — exhaust it first
-	mw := IpRateLimit(limiter)
+	mw := IpRateLimit(limiter, false)
 
 	handlerCalled := false
 	h := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -106,6 +106,38 @@ func TestIpRateLimitBlocksAuthRequiredPaths(t *testing.T) {
 	}
 	if resp.Code != http.StatusTooManyRequests {
 		t.Fatalf("expected 429, got %d", resp.Code)
+	}
+}
+
+func TestIpRateLimitSkipsWhenJwtIdentified(t *testing.T) {
+	limiter := newTestLimiter(1) // 1 RPM — would block on second request
+	mw := IpRateLimit(limiter, true)
+
+	h := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest("GET", "http://example.com/api", nil)
+	req.RemoteAddr = "203.0.113.1:1234"
+
+	// Exhaust the IP limit
+	resp0 := httptest.NewRecorder()
+	h.ServeHTTP(resp0, req)
+
+	// Second request without JWT context: should be blocked
+	resp1 := httptest.NewRecorder()
+	h.ServeHTTP(resp1, req)
+	if resp1.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 for non-JWT request, got %d", resp1.Code)
+	}
+
+	// Same request but with JWT identity in context: should pass through
+	ctx := context.WithValue(req.Context(), jwtIdentifiedKey, true)
+	jwtReq := req.WithContext(ctx)
+	resp2 := httptest.NewRecorder()
+	h.ServeHTTP(resp2, jwtReq)
+	if resp2.Code != http.StatusOK {
+		t.Fatalf("expected 200 for JWT-identified request, got %d", resp2.Code)
 	}
 }
 

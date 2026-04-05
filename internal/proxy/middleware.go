@@ -18,7 +18,10 @@ import (
 
 type contextKey string
 
-const authRequiredKey contextKey = "authRequired"
+const (
+	authRequiredKey    contextKey = "authRequired"
+	jwtIdentifiedKey   contextKey = "jwtIdentified"
+)
 
 // RequestLogger adds structured request logs.
 func RequestLogger(logger *slog.Logger, includePaths, excludePaths []string) Middleware {
@@ -94,12 +97,21 @@ func PathFilter(includePaths, excludePaths []string) Middleware {
 
 // IpRateLimit enforces per-IP rate limits for all requests regardless of auth status.
 // This provides DDoS protection by capping requests per IP before any auth processing.
-func IpRateLimit(limiter *ratelimit.RateLimiter) Middleware {
+// When skipIfJwtIdentified is true, requests that carry a JWT sub claim (identified by
+// JwtRateLimit upstream) bypass the IP check — they are already governed by the JWT limiter.
+func IpRateLimit(limiter *ratelimit.RateLimiter, skipIfJwtIdentified bool) Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if limiter == nil {
 				next.ServeHTTP(w, r)
 				return
+			}
+
+			if skipIfJwtIdentified {
+				if identified, _ := r.Context().Value(jwtIdentifiedKey).(bool); identified {
+					next.ServeHTTP(w, r)
+					return
+				}
 			}
 
 			ip := ClientIP(r)
@@ -163,6 +175,10 @@ func JwtRateLimit(limiter *ratelimit.RateLimiter, includeIP bool) Middleware {
 				next.ServeHTTP(w, r)
 				return
 			}
+
+			// Mark JWT identity in context so IpRateLimit can skip when configured.
+			ctx := context.WithValue(r.Context(), jwtIdentifiedKey, true)
+			r = r.WithContext(ctx)
 
 			key := "s:" + sub
 			if includeIP {

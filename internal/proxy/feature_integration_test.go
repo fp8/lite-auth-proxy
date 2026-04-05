@@ -104,6 +104,8 @@ func buildJWT(t *testing.T, rsaKey *rsa.PrivateKey, kid, issuer, audience string
 }
 
 // writeTempConfig writes a TOML string to a temp file and returns the path.
+func boolPtr(b bool) *bool { return &b }
+
 func writeTempConfig(t *testing.T, content string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -631,9 +633,10 @@ func TestCombo_RateLimit_JWTAuth(t *testing.T) {
 		},
 		Security: config.SecurityConfig{
 			RateLimit: config.RateLimitConfig{
-				Enabled:        true,
-				RequestsPerMin: 3,
-				BanForMin:      1,
+				Enabled:             true,
+				RequestsPerMin:      3,
+				BanForMin:           1,
+				SkipIfJwtIdentified: boolPtr(false), // enforce IP limit unconditionally for this test
 			},
 		},
 	}

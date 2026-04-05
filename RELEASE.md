@@ -1,5 +1,12 @@
 # lite-auth-proxy
 
+# 1.1.2 [2026-04-05]
+
+## Rate Limiting
+
+* **`skip_if_jwt_identified` for IP rate limiter** — new `security.rate_limit.skip_if_jwt_identified` flag (default `true`). When enabled, requests carrying a valid JWT `sub` claim bypass the IP rate limiter entirely and are governed solely by the JWT rate limiter. This prevents corporate users sharing a single outbound NAT IP from being incorrectly throttled at the IP level while still protecting against anonymous DDoS traffic.
+* New env override: `PROXY_SECURITY_RATE_LIMIT_SKIP_IF_JWT_IDENTIFIED`.
+
 # 1.1.1 [2026-04-01]
 
 ## Unified Rate Limiting

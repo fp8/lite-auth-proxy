@@ -4,7 +4,7 @@ This document provides a comprehensive reference for all configuration options i
 
 ## Configuration File Format
 
-lite-auth-proxy uses TOML format for its configuration files. The default configuration file location is `configs/config.toml`, but you can specify a custom location using the `-config` flag:
+lite-auth-proxy uses TOML format for its configuration files. The default configuration file location is `config/config.toml`, but you can specify a custom location using the `-config` flag:
 
 ```bash
 ./bin/lite-auth-proxy -config /path/to/custom-config.toml
@@ -82,25 +82,113 @@ target = ""
 
 ## Security Configuration
 
-### Rate Limiting
+lite-auth-proxy provides three independent rate limiter layers plus a request body size limit. For detailed scenarios, tuning guidance, and the ShockGuard throttle mechanism, see the [Rate Limiting Guide](RATE-LIMITING.md).
+
+### Body Size Limit
 
 ```toml
-[security.rate_limit]
-enabled = true
-requests_per_min = 60
-ban_for_min = 5
+[security]
+max_body_bytes = 1048576             # 1 MiB default; 0 = no limit
 ```
 
 | Field | Type | Default | ENV Variable | Description |
 |-------|------|---------|---|-------------|
-| `enabled` | boolean | `false` | `PROXY_SECURITY_RATE_LIMIT_ENABLED` | Enable/disable rate limiting |
-| `requests_per_min` | integer | `60` | `PROXY_SECURITY_RATE_LIMIT_REQUESTS_PER_MIN` | Maximum requests per IP address per minute |
-| `ban_for_min` | integer | `5` | `PROXY_SECURITY_RATE_LIMIT_BAN_FOR_MIN` | Ban duration in minutes when rate limit is exceeded |
+| `max_body_bytes` | integer | `1048576` (1 MiB) | `PROXY_SECURITY_MAX_BODY_BYTES` | Max request body size in bytes. Requests exceeding this limit receive a 413 response. `0` disables the limit. |
 
-**Rate Limiting Behavior:**
-- Rate limiting is per-IP address
-- When limit is exceeded, IP is banned for specified duration
-- Returns HTTP 429 (Too Many Requests) with `retry_after` in response
+### Per-IP Rate Limiting
+
+```toml
+[security.rate_limit]
+enabled = true                       # First line of defense -- on by default
+requests_per_min = 60                # Reasonable ceiling for anonymous/unauthenticated traffic
+ban_for_min = 5                      # Short enough to not block legitimate users for long
+skip_if_jwt_identified = true        # Authenticated (JWT) users bypass the IP limit --
+                                     # prevents penalising corporate NAT users who are
+                                     # already governed by the JWT rate limiter
+# throttle_delay_ms = 0             # Disabled by default to keep response latency predictable
+# max_delay_slots = 100             # Only relevant when throttle_delay_ms > 0
+```
+
+| Field | Type | Default | ENV Variable | Description |
+|-------|------|---------|---|-------------|
+| `enabled` | boolean | `false` | `PROXY_SECURITY_RATE_LIMIT_ENABLED` | Enable per-IP rate limiting |
+| `requests_per_min` | integer | `60` | `PROXY_SECURITY_RATE_LIMIT_REQUESTS_PER_MIN` | Max requests per IP per minute |
+| `ban_for_min` | integer | `5` | `PROXY_SECURITY_RATE_LIMIT_BAN_FOR_MIN` | Ban duration when limit exceeded (minutes) |
+| `skip_if_jwt_identified` | boolean | `true` | `PROXY_SECURITY_RATE_LIMIT_SKIP_IF_JWT_IDENTIFIED` | Skip IP rate limit when a JWT `sub` claim is present; see [Rate Limiting Guide](RATE-LIMITING.md#corporate-nat-and-shared-ip-scenarios) |
+| `throttle_delay_ms` | integer | `0` | `PROXY_SECURITY_RATE_LIMIT_THROTTLE_DELAY_MS` | Delay before 429 response (ms); `0` = disabled |
+| `max_delay_slots` | integer | `100` | `PROXY_SECURITY_RATE_LIMIT_MAX_DELAY_SLOTS` | Max concurrent throttled responses (DDoS cap) |
+
+**Why these defaults:** IP rate limiting is the broadest protection layer and is enabled out of the box. The 60 req/min limit stops basic abuse while allowing normal browsing. `skip_if_jwt_identified = true` because corporate NAT users sharing an IP would quickly exhaust the bucket -- those users are better served by the per-JWT limiter. Throttle delay is off by default because most deployments prefer a clean 429 over holding connections open.
+
+### Per-API-Key Rate Limiting
+
+```toml
+[security.apikey_rate_limit]
+enabled = false                      # Opt-in -- only needed when your backend uses API keys
+requests_per_min = 200               # Higher than IP limit because API keys represent known,
+                                     # trusted integrations rather than anonymous traffic
+ban_for_min = 5                      # Standard ban duration
+include_ip = false                   # Keys typically identify a specific integration, not a user
+key_header = "x-goog-api-key"        # Pre-configured for Google Cloud / Vertex AI usage
+# throttle_delay_ms = 0             # Disabled by default
+# max_delay_slots = 100             # Only relevant when throttle_delay_ms > 0
+```
+
+| Field | Type | Default | ENV Variable | Description |
+|-------|------|---------|---|-------------|
+| `enabled` | boolean | `false` | `PROXY_SECURITY_APIKEY_RATE_LIMIT_ENABLED` | Enable per-API-key rate limiting |
+| `requests_per_min` | integer | `60` | `PROXY_SECURITY_APIKEY_RATE_LIMIT_REQUESTS_PER_MIN` | Max requests per key per minute |
+| `ban_for_min` | integer | `5` | `PROXY_SECURITY_APIKEY_RATE_LIMIT_BAN_FOR_MIN` | Ban duration (minutes) |
+| `include_ip` | boolean | `false` | `PROXY_SECURITY_APIKEY_RATE_LIMIT_INCLUDE_IP` | Prefix rate-limit key with client IP |
+| `key_header` | string | `"x-goog-api-key"` | `PROXY_SECURITY_APIKEY_RATE_LIMIT_KEY_HEADER` | Header to extract API key from |
+| `throttle_delay_ms` | integer | `0` | `PROXY_SECURITY_APIKEY_RATE_LIMIT_THROTTLE_DELAY_MS` | Delay before 429 response (ms) |
+| `max_delay_slots` | integer | `100` | `PROXY_SECURITY_APIKEY_RATE_LIMIT_MAX_DELAY_SLOTS` | Max concurrent throttled responses |
+
+**Why these defaults:** Disabled by default because not all deployments use API keys. The 200 req/min config.toml value is more generous than the IP limit -- API keys represent provisioned clients expected to generate higher traffic. `include_ip = false` because a single key is typically one integration. `key_header` is pre-set for Google Cloud / Vertex AI.
+
+#### API-Key Request Matching
+
+```toml
+# Request matching rules -- rate limiting only applies to matching requests.
+# Multiple [[match]] entries use OR logic; fields within a rule use AND logic.
+# Host/Path support exact strings or /regex/ syntax.
+#
+# Example: Vertex AI endpoints
+# [[security.apikey_rate_limit.match]]
+# host = "/.*-aiplatform\\.googleapis\\.com/"
+#
+# [[security.apikey_rate_limit.match]]
+# path = "/\\/v1\\/projects\\/.*\\/(endpoints|publishers|models)\\//"
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `host` | string | Host pattern -- exact string or `/regex/` |
+| `path` | string | Path pattern -- exact string or `/regex/` |
+| `header` | string | Header name that must be present |
+
+### Per-JWT Rate Limiting
+
+```toml
+[security.jwt_rate_limit]
+enabled = false                      # Opt-in -- activate when you need per-user rate limiting
+requests_per_min = 200               # Generous for authenticated users who have proven identity
+ban_for_min = 5                      # Standard ban duration
+include_ip = true                    # If a JWT is compromised, limits blast radius per IP+user pair
+# throttle_delay_ms = 0             # Disabled by default
+# max_delay_slots = 100             # Only relevant when throttle_delay_ms > 0
+```
+
+| Field | Type | Default | ENV Variable | Description |
+|-------|------|---------|---|-------------|
+| `enabled` | boolean | `false` | `PROXY_SECURITY_JWT_RATE_LIMIT_ENABLED` | Enable per-JWT rate limiting |
+| `requests_per_min` | integer | `60` | `PROXY_SECURITY_JWT_RATE_LIMIT_REQUESTS_PER_MIN` | Max requests per JWT `sub` per minute |
+| `ban_for_min` | integer | `5` | `PROXY_SECURITY_JWT_RATE_LIMIT_BAN_FOR_MIN` | Ban duration (minutes) |
+| `include_ip` | boolean | `false` | `PROXY_SECURITY_JWT_RATE_LIMIT_INCLUDE_IP` | Prefix rate-limit key with client IP |
+| `throttle_delay_ms` | integer | `0` | `PROXY_SECURITY_JWT_RATE_LIMIT_THROTTLE_DELAY_MS` | Delay before 429 response (ms) |
+| `max_delay_slots` | integer | `100` | `PROXY_SECURITY_JWT_RATE_LIMIT_MAX_DELAY_SLOTS` | Max concurrent throttled responses |
+
+**Why these defaults:** Disabled by default because it requires JWT auth to be configured first. The 200 req/min config.toml value is generous because authenticated users have proven their identity. `include_ip = true` (unlike the API-key limiter) because JWTs represent individual users -- if a token is stolen, the IP prefix isolates the attacker's traffic from the real user's bucket.
 
 ## Authentication Configuration
 
@@ -285,9 +373,26 @@ All configuration values can be overridden using environment variables with the 
 
 | Environment Variable | Config Field | Type |
 |---------------------|--------------|------|
+| `PROXY_SECURITY_MAX_BODY_BYTES` | `security.max_body_bytes` | integer |
 | `PROXY_SECURITY_RATE_LIMIT_ENABLED` | `security.rate_limit.enabled` | boolean |
 | `PROXY_SECURITY_RATE_LIMIT_REQUESTS_PER_MIN` | `security.rate_limit.requests_per_min` | integer |
 | `PROXY_SECURITY_RATE_LIMIT_BAN_FOR_MIN` | `security.rate_limit.ban_for_min` | integer |
+| `PROXY_SECURITY_RATE_LIMIT_SKIP_IF_JWT_IDENTIFIED` | `security.rate_limit.skip_if_jwt_identified` | boolean |
+| `PROXY_SECURITY_RATE_LIMIT_THROTTLE_DELAY_MS` | `security.rate_limit.throttle_delay_ms` | integer |
+| `PROXY_SECURITY_RATE_LIMIT_MAX_DELAY_SLOTS` | `security.rate_limit.max_delay_slots` | integer |
+| `PROXY_SECURITY_APIKEY_RATE_LIMIT_ENABLED` | `security.apikey_rate_limit.enabled` | boolean |
+| `PROXY_SECURITY_APIKEY_RATE_LIMIT_REQUESTS_PER_MIN` | `security.apikey_rate_limit.requests_per_min` | integer |
+| `PROXY_SECURITY_APIKEY_RATE_LIMIT_BAN_FOR_MIN` | `security.apikey_rate_limit.ban_for_min` | integer |
+| `PROXY_SECURITY_APIKEY_RATE_LIMIT_INCLUDE_IP` | `security.apikey_rate_limit.include_ip` | boolean |
+| `PROXY_SECURITY_APIKEY_RATE_LIMIT_KEY_HEADER` | `security.apikey_rate_limit.key_header` | string |
+| `PROXY_SECURITY_APIKEY_RATE_LIMIT_THROTTLE_DELAY_MS` | `security.apikey_rate_limit.throttle_delay_ms` | integer |
+| `PROXY_SECURITY_APIKEY_RATE_LIMIT_MAX_DELAY_SLOTS` | `security.apikey_rate_limit.max_delay_slots` | integer |
+| `PROXY_SECURITY_JWT_RATE_LIMIT_ENABLED` | `security.jwt_rate_limit.enabled` | boolean |
+| `PROXY_SECURITY_JWT_RATE_LIMIT_REQUESTS_PER_MIN` | `security.jwt_rate_limit.requests_per_min` | integer |
+| `PROXY_SECURITY_JWT_RATE_LIMIT_BAN_FOR_MIN` | `security.jwt_rate_limit.ban_for_min` | integer |
+| `PROXY_SECURITY_JWT_RATE_LIMIT_INCLUDE_IP` | `security.jwt_rate_limit.include_ip` | boolean |
+| `PROXY_SECURITY_JWT_RATE_LIMIT_THROTTLE_DELAY_MS` | `security.jwt_rate_limit.throttle_delay_ms` | integer |
+| `PROXY_SECURITY_JWT_RATE_LIMIT_MAX_DELAY_SLOTS` | `security.jwt_rate_limit.max_delay_slots` | integer |
 
 ### Admin Overrides
 
@@ -314,7 +419,7 @@ All configuration values can be overridden using environment variables with the 
 
 ## Default Configuration
 
-The default configuration file (`configs/config.toml`) comes pre-configured for quick setup. Here's what's enabled by default:
+The default configuration file (`config/config.toml`) comes pre-configured for quick setup. Here's what's enabled by default:
 
 ### What's Included by Default
 
@@ -326,9 +431,10 @@ include_paths = ["/*"]               # All paths require authentication
 exclude_paths = ["/healthz"]         # Health check bypasses auth
 
 [security.rate_limit]
-enabled = true                       # Rate limiting is ON
+enabled = true                       # IP rate limiting is ON
 requests_per_min = 60                # Max 60 requests per IP per minute
 ban_for_min = 5                      # Ban duration is 5 minutes
+skip_if_jwt_identified = true        # Authenticated JWT users bypass IP limiter
 
 [auth.jwt]
 enabled = true                       # JWT authentication is ON
@@ -342,8 +448,12 @@ enabled = false                      # API-Key auth is OFF by default
 ### What's Disabled by Default
 
 - **API-Key Authentication**: Disabled (`enabled = false`)
+- **Per-API-Key Rate Limiting**: Disabled (`enabled = false`); pre-configured at 200 req/min with `x-goog-api-key` header when enabled
+- **Per-JWT Rate Limiting**: Disabled (`enabled = false`); pre-configured at 200 req/min with `include_ip = true` when enabled
+- **Throttle Delay (ShockGuard)**: Disabled on all limiters (`throttle_delay_ms = 0`); see [Rate Limiting Guide](RATE-LIMITING.md#scenario-2-enabling-shockguard-for-gradual-backoff) for setup
 - **JWT Filters**: No filters configured (all JWT tokens accepted if valid)
-- **JWT Mappings**: Basic mappings only (`sub` → `USER-ID`, `email` → `USER-EMAIL`)
+- **JWT Mappings**: Basic mappings only (`sub` -> `USER-ID`, `email` -> `USER-EMAIL`)
+- **Admin Control-Plane**: Disabled (`enabled = false`)
 
 ### Enabling API-Key Authentication
 
@@ -356,7 +466,7 @@ export API_KEY_SECRET="your-secret-key-value"
 ./bin/lite-auth-proxy
 
 # Method 2: Using TOML configuration
-# Edit configs/config.toml:
+# Edit config/config.toml:
 [auth.api_key]
 enabled = true
 name = "X-API-KEY"

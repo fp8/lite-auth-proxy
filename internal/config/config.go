@@ -53,11 +53,12 @@ type SecurityConfig struct {
 
 // RateLimitConfig contains IP-based rate limiting settings
 type RateLimitConfig struct {
-	Enabled         bool `toml:"enabled"`
-	RequestsPerMin  int  `toml:"requests_per_min"`
-	BanForMin       int  `toml:"ban_for_min"`
-	ThrottleDelayMs int  `toml:"throttle_delay_ms"`
-	MaxDelaySlots   int  `toml:"max_delay_slots"`
+	Enabled              bool  `toml:"enabled"`
+	RequestsPerMin       int   `toml:"requests_per_min"`
+	BanForMin            int   `toml:"ban_for_min"`
+	ThrottleDelayMs      int   `toml:"throttle_delay_ms"`
+	MaxDelaySlots        int   `toml:"max_delay_slots"`
+	SkipIfJwtIdentified  *bool `toml:"skip_if_jwt_identified"`
 }
 
 // MatchRule defines a request matching rule for rate-limit targeting.
@@ -238,6 +239,13 @@ func applyEnvOverrides(config *Config) error {
 			return fmt.Errorf("invalid PROXY_SECURITY_RATE_LIMIT_MAX_DELAY_SLOTS: %w", err)
 		}
 		config.Security.RateLimit.MaxDelaySlots = slots
+	}
+	if val := os.Getenv("PROXY_SECURITY_RATE_LIMIT_SKIP_IF_JWT_IDENTIFIED"); val != "" {
+		skip, err := strconv.ParseBool(val)
+		if err != nil {
+			return fmt.Errorf("invalid PROXY_SECURITY_RATE_LIMIT_SKIP_IF_JWT_IDENTIFIED: %w", err)
+		}
+		config.Security.RateLimit.SkipIfJwtIdentified = &skip
 	}
 
 	// API key rate limit overrides
@@ -479,6 +487,10 @@ func setDefaults(config *Config) {
 	// ThrottleDelayMs defaults to 0 (off)
 	if config.Security.RateLimit.MaxDelaySlots == 0 {
 		config.Security.RateLimit.MaxDelaySlots = 100
+	}
+	if config.Security.RateLimit.SkipIfJwtIdentified == nil {
+		defaultTrue := true
+		config.Security.RateLimit.SkipIfJwtIdentified = &defaultTrue
 	}
 
 	// Security defaults — API key rate limit

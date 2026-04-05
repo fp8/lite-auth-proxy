@@ -34,16 +34,47 @@ export PROXY_SERVER_STRIP_PREFIX=/api
 
 ### Security Configuration
 
+#### Per-IP Rate Limiting
+
 | Variable | Type | Default | Description |
 |----------|------|---------|-------------|
-| `PROXY_SECURITY_RATE_LIMIT_ENABLED` | boolean | `false` | Enable rate limiting |
+| `PROXY_SECURITY_RATE_LIMIT_ENABLED` | boolean | `false` | Enable per-IP rate limiting |
 | `PROXY_SECURITY_RATE_LIMIT_REQUESTS_PER_MIN` | integer | `60` | Max requests per IP per minute |
-| `PROXY_SECURITY_RATE_LIMIT_BAN_FOR_MIN` | integer | `5` | Ban duration when limit exceeded |
+| `PROXY_SECURITY_RATE_LIMIT_BAN_FOR_MIN` | integer | `5` | Ban duration when limit exceeded (minutes) |
+| `PROXY_SECURITY_RATE_LIMIT_SKIP_IF_JWT_IDENTIFIED` | boolean | `true` | Skip IP rate limit when a JWT sub claim is present |
+| `PROXY_SECURITY_RATE_LIMIT_THROTTLE_DELAY_MS` | integer | `0` | Delay before 429 response (ms); `0` = disabled |
+| `PROXY_SECURITY_RATE_LIMIT_MAX_DELAY_SLOTS` | integer | `100` | Max concurrent throttled responses |
+| `PROXY_SECURITY_MAX_BODY_BYTES` | integer | `1048576` | Max request body size in bytes (1 MiB default) |
+
+#### Per-API-Key Rate Limiting
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `PROXY_SECURITY_APIKEY_RATE_LIMIT_ENABLED` | boolean | `false` | Enable per-API-key rate limiting |
+| `PROXY_SECURITY_APIKEY_RATE_LIMIT_REQUESTS_PER_MIN` | integer | `60` | Max requests per key per minute |
+| `PROXY_SECURITY_APIKEY_RATE_LIMIT_BAN_FOR_MIN` | integer | `5` | Ban duration (minutes) |
+| `PROXY_SECURITY_APIKEY_RATE_LIMIT_INCLUDE_IP` | boolean | `false` | Prefix rate-limit key with client IP |
+| `PROXY_SECURITY_APIKEY_RATE_LIMIT_KEY_HEADER` | string | `"x-goog-api-key"` | Header to extract API key from |
+| `PROXY_SECURITY_APIKEY_RATE_LIMIT_THROTTLE_DELAY_MS` | integer | `0` | Delay before 429 response (ms) |
+| `PROXY_SECURITY_APIKEY_RATE_LIMIT_MAX_DELAY_SLOTS` | integer | `100` | Max concurrent throttled responses |
+
+#### Per-JWT Rate Limiting
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `PROXY_SECURITY_JWT_RATE_LIMIT_ENABLED` | boolean | `false` | Enable per-JWT rate limiting |
+| `PROXY_SECURITY_JWT_RATE_LIMIT_REQUESTS_PER_MIN` | integer | `60` | Max requests per JWT `sub` per minute |
+| `PROXY_SECURITY_JWT_RATE_LIMIT_BAN_FOR_MIN` | integer | `5` | Ban duration (minutes) |
+| `PROXY_SECURITY_JWT_RATE_LIMIT_INCLUDE_IP` | boolean | `false` | Prefix rate-limit key with client IP |
+| `PROXY_SECURITY_JWT_RATE_LIMIT_THROTTLE_DELAY_MS` | integer | `0` | Delay before 429 response (ms) |
+| `PROXY_SECURITY_JWT_RATE_LIMIT_MAX_DELAY_SLOTS` | integer | `100` | Max concurrent throttled responses |
 
 **Example:**
 ```bash
 export PROXY_SECURITY_RATE_LIMIT_ENABLED=true
 export PROXY_SECURITY_RATE_LIMIT_REQUESTS_PER_MIN=100
+export PROXY_SECURITY_APIKEY_RATE_LIMIT_ENABLED=true
+export PROXY_SECURITY_APIKEY_RATE_LIMIT_KEY_HEADER=x-goog-api-key
 ```
 
 ### Authentication Configuration
@@ -371,4 +402,4 @@ See [Development Guide](DEVELOPMENT.md#real-world-jwt-tests-firebase) for detail
 
 - [Configuration Guide](CONFIGURATION.md)
 - [Development Guide](DEVELOPMENT.md)
-- [Deployment Guide](Deployment.md)
+- [Deployment Guide](DEPLOYMENT.md)

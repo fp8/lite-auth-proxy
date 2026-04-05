@@ -27,7 +27,7 @@ High-performance Go-based reverse proxy with JWT/API-key authentication for serv
 ## CONFIGURATION_SYSTEM
 
 ### Config Loading Flow
-1. Read TOML file from `-config` flag (default: configs/config.toml)
+1. Read TOML file from `-config` flag (default: /config/config.toml)
 2. Substitute `{{ENV.VARIABLE_NAME}}` placeholders with env vars
 3. Parse TOML into Config struct (github.com/BurntSushi/toml)
 4. Apply `PROXY_*` environment variable overrides
@@ -67,11 +67,12 @@ type SecurityConfig struct {
 }
 
 type RateLimitConfig struct {
-    Enabled         bool  // false default
-    RequestsPerMin  int   // 60 default
-    BanForMin       int   // 5 default
-    ThrottleDelayMs int   // 0 default (disabled)
-    MaxDelaySlots   int   // 100 default
+    Enabled              bool  // false default
+    RequestsPerMin       int   // 60 default
+    BanForMin            int   // 5 default
+    ThrottleDelayMs      int   // 0 default (disabled)
+    MaxDelaySlots        int   // 100 default
+    SkipIfJwtIdentified  *bool // true default (nil treated as true)
 }
 
 type ApiKeyRateLimitConfig struct {

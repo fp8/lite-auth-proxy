@@ -16,14 +16,20 @@ target = ""                                    # Optional: proxy health check to
 
 [security.rate_limit]
 enabled = true                                 # Enable/disable IP-based rate limiting
-requests_per_min = 60                          # Max requests per IP per minute
+requests_per_min = 60                          # Max requests per IP per minute (In this context, unauthenticated traffic)
 ban_for_min = 5                                # Ban duration when rate limit exceeded
+skip_if_jwt_identified = true                  # Skip IP rate limit when a JWT sub claim is present.
+                                               # Prevents penalising corporate users who share a
+                                               # single outbound NAT IP — they are already governed
+                                               # by the JWT rate limiter. Anonymous traffic (no JWT)
+                                               # is still subject to the IP limit.
+                                               # Set to false to enforce the IP limit unconditionally.
 # throttle_delay_ms = 0                        # Delay (ms) before returning 429 (0 = disabled)
 # max_delay_slots = 100                        # Max concurrent delayed responses (DDoS safety)
 
 [security.apikey_rate_limit]
 enabled = false                                # Enable/disable API-key-based rate limiting
-requests_per_min = 60                          # Max requests per API key per minute
+requests_per_min = 200                         # Max requests per API key per minute
 ban_for_min = 5                                # Ban duration when rate limit exceeded
 include_ip = false                             # Prefix rate-limit key with client IP
 key_header = "x-goog-api-key"                  # Header to extract API key from
@@ -43,7 +49,7 @@ key_header = "x-goog-api-key"                  # Header to extract API key from
 
 [security.jwt_rate_limit]
 enabled = false                                # Enable/disable JWT-based rate limiting
-requests_per_min = 60                          # Max requests per JWT sub claim per minute
+requests_per_min = 200                         # Max requests per JWT sub claim per minute
 ban_for_min = 5                                # Ban duration when rate limit exceeded
 include_ip = true                              # Prefix rate-limit key with client IP
 # throttle_delay_ms = 0                        # Delay (ms) before returning 429 (0 = disabled)

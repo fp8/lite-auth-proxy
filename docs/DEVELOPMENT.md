@@ -134,7 +134,7 @@ make run
 ### Run with Custom Config
 
 ```bash
-./bin/lite-auth-proxy -config configs/config.test.toml
+./bin/lite-auth-proxy -config config/config.test.toml
 ```
 
 ### Run with Environment Overrides
@@ -246,12 +246,26 @@ internal/
 ├── config/
 │   ├── config.go
 │   └── config_test.go               # Unit tests
+├── admin/
+│   ├── handler.go                   # Admin control-plane API
+│   ├── handler_test.go
+│   ├── auth.go                      # Admin JWT auth middleware
+│   ├── auth_test.go
+│   ├── types.go                     # Rule, request/response types
+│   ├── rule_store.go                # In-memory rule store
+│   └── rule_store_test.go
 ├── proxy/
 │   ├── proxy.go
 │   ├── proxy_test.go                # Unit tests
 │   ├── middleware.go
 │   ├── middleware_test.go
-│   └── integration_test.go          # Integration tests (build tag)
+│   ├── dynamic_rule.go              # Admin dynamic rule check middleware
+│   ├── dynamic_rule_test.go
+│   ├── integration_test.go          # Integration tests (build tag)
+│   └── feature_integration_test.go  # Scenario-based integration tests
+├── startup/
+│   ├── rule_loader.go               # Load persisted rules from PROXY_THROTTLE_RULES
+│   └── rule_loader_test.go
 └── ratelimit/
     ├── limiter.go
     └── limiter_test.go              # Unit tests
@@ -414,9 +428,8 @@ lite-auth-proxy/
 │   ├── logging/                     # Structured logging
 │   ├── proxy/                       # Reverse proxy core
 │   └── ratelimit/                   # Rate limiting
-├── configs/
-│   ├── config.toml                  # Default configuration
-│   └── config.test.toml             # Test configuration
+├── config/
+│   └── config.toml                  # Default configuration
 ├── docs/                            # Documentation
 ├── bin/                             # Build output (gitignored)
 ├── .env.example                     # Environment variable template
@@ -470,7 +483,7 @@ LOG_LEVEL=debug ./bin/lite-auth-proxy
 go install github.com/go-delve/delve/cmd/dlv@latest
 
 # Run with debugger
-dlv debug ./cmd/proxy -- -config configs/config.toml
+dlv debug ./cmd/proxy -- -config config/config.toml
 ```
 
 ### VSCode Debug Configuration
@@ -486,7 +499,7 @@ dlv debug ./cmd/proxy -- -config configs/config.toml
       "request": "launch",
       "mode": "debug",
       "program": "${workspaceFolder}/cmd/proxy",
-      "args": ["-config", "configs/config.toml"],
+      "args": ["-config", "config/config.toml"],
       "env": {
         "LOG_MODE": "development",
         "LOG_LEVEL": "debug"
@@ -657,4 +670,4 @@ Types: `feat`, `fix`, `docs`, `test`, `refactor`, `perf`, `chore`
 - [Configuration Guide](CONFIGURATION.md)
 - [Environment Variables Guide](ENVIRONMENT.md)
 - [API Documentation](API.md)
-- [Deployment Guide](Deployment.md)
+- [Deployment Guide](DEPLOYMENT.md)
