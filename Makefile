@@ -188,15 +188,16 @@ docker-push-all: docker-push-flex docker-push-lite
 
 # Cloud Build target
 cloud-build:
-	@if [ -z "$(GOOGLE_CLOUD_PROJECT)" ]; then \
-		echo "Error: GOOGLE_CLOUD_PROJECT environment variable must be set"; \
-		exit 1; \
-	fi
-	@echo "Submitting build to Google Cloud Build..."
 	@if ! command -v gcloud &> /dev/null; then \
 		echo "Error: gcloud CLI not found. Install it from https://cloud.google.com/sdk/docs/install"; \
 		exit 1; \
 	fi
-	gcloud builds submit --config cloudbuild.yaml \
-		--project=$(GOOGLE_CLOUD_PROJECT)
+	@ACTIVE_PROJECT=$$(gcloud config get-value project 2>/dev/null); \
+	if [ "$$ACTIVE_PROJECT" != "fp8main" ]; then \
+		echo "Error: active gcloud project must be 'fp8main' (currently '$$ACTIVE_PROJECT')"; \
+		echo "Run: gcloud config set project fp8main"; \
+		exit 1; \
+	fi
+	@echo "Submitting build to Google Cloud Build..."
+	gcloud builds submit --config cloudbuild.yaml --project=fp8main
 	@echo "Build submitted to Cloud Build. View progress in GCP Console."

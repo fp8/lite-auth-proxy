@@ -40,8 +40,8 @@ steps:
         DOCKER_REPO_NAME=${_DOCKER_REPO_NAME}
         docker build \
           --build-arg VERSION=$$VERSION \
-          -t $$DOCKER_REGISTRY/${PROJECT_ID}/$$DOCKER_REPO_NAME/flex-auth-proxy:$$VERSION \
-          -t $$DOCKER_REGISTRY/${PROJECT_ID}/$$DOCKER_REPO_NAME/flex-auth-proxy:$$MAJOR_MINOR \
+          -t $$DOCKER_REGISTRY/${_REGISTRY_PROJECT_ID}/$$DOCKER_REPO_NAME/flex-auth-proxy:$$VERSION \
+          -t $$DOCKER_REGISTRY/${_REGISTRY_PROJECT_ID}/$$DOCKER_REPO_NAME/flex-auth-proxy:$$MAJOR_MINOR \
           -f Dockerfile.flex .
     waitFor: ['test']
 
@@ -58,8 +58,8 @@ steps:
         DOCKER_REPO_NAME=${_DOCKER_REPO_NAME}
         docker build \
           --build-arg VERSION=$$VERSION \
-          -t $$DOCKER_REGISTRY/${PROJECT_ID}/$$DOCKER_REPO_NAME/lite-auth-proxy:$$VERSION \
-          -t $$DOCKER_REGISTRY/${PROJECT_ID}/$$DOCKER_REPO_NAME/lite-auth-proxy:$$MAJOR_MINOR \
+          -t $$DOCKER_REGISTRY/${_REGISTRY_PROJECT_ID}/$$DOCKER_REPO_NAME/lite-auth-proxy:$$VERSION \
+          -t $$DOCKER_REGISTRY/${_REGISTRY_PROJECT_ID}/$$DOCKER_REPO_NAME/lite-auth-proxy:$$MAJOR_MINOR \
           -f Dockerfile.lite .
     waitFor: ['test']
 
@@ -74,8 +74,8 @@ steps:
         MAJOR_MINOR=$$(cat /workspace/major-minor.txt)
         DOCKER_REGISTRY=${_DOCKER_REGISTRY}
         DOCKER_REPO_NAME=${_DOCKER_REPO_NAME}
-        docker push $$DOCKER_REGISTRY/${PROJECT_ID}/$$DOCKER_REPO_NAME/flex-auth-proxy:$$VERSION
-        docker push $$DOCKER_REGISTRY/${PROJECT_ID}/$$DOCKER_REPO_NAME/flex-auth-proxy:$$MAJOR_MINOR
+        docker push $$DOCKER_REGISTRY/${_REGISTRY_PROJECT_ID}/$$DOCKER_REPO_NAME/flex-auth-proxy:$$VERSION
+        docker push $$DOCKER_REGISTRY/${_REGISTRY_PROJECT_ID}/$$DOCKER_REPO_NAME/flex-auth-proxy:$$MAJOR_MINOR
     waitFor: ['build-flex']
 
   # Step 4b: Push lite-auth-proxy image
@@ -89,8 +89,8 @@ steps:
         MAJOR_MINOR=$$(cat /workspace/major-minor.txt)
         DOCKER_REGISTRY=${_DOCKER_REGISTRY}
         DOCKER_REPO_NAME=${_DOCKER_REPO_NAME}
-        docker push $$DOCKER_REGISTRY/${PROJECT_ID}/$$DOCKER_REPO_NAME/lite-auth-proxy:$$VERSION
-        docker push $$DOCKER_REGISTRY/${PROJECT_ID}/$$DOCKER_REPO_NAME/lite-auth-proxy:$$MAJOR_MINOR
+        docker push $$DOCKER_REGISTRY/${_REGISTRY_PROJECT_ID}/$$DOCKER_REPO_NAME/lite-auth-proxy:$$VERSION
+        docker push $$DOCKER_REGISTRY/${_REGISTRY_PROJECT_ID}/$$DOCKER_REPO_NAME/lite-auth-proxy:$$MAJOR_MINOR
     waitFor: ['build-lite']
 
 # Note: The images: block has been deliberately removed.
@@ -99,6 +99,7 @@ steps:
 substitutions:
   _DOCKER_REGISTRY: 'europe-docker.pkg.dev'
   _DOCKER_REPO_NAME: 'docker'
+  _REGISTRY_PROJECT_ID: 'fp8main'
 
 # Build options
 options:
