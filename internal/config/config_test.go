@@ -995,7 +995,7 @@ func TestFetchGCPProjectID_MetadataServerCalled(t *testing.T) {
 		if r.Header.Get("Metadata-Flavor") != "Google" {
 			t.Errorf("expected Metadata-Flavor: Google, got %q", r.Header.Get("Metadata-Flavor"))
 		}
-		fmt.Fprint(w, "gcp-project-from-metadata")
+		_, _ = fmt.Fprint(w, "gcp-project-from-metadata")
 	}))
 	defer srv.Close()
 	setMetadataURL(t, srv.URL)
@@ -1035,7 +1035,7 @@ func TestResolveGCPProjectID_EnvVarTakesPrecedence(t *testing.T) {
 	called := false
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
-		fmt.Fprint(w, "metadata-project")
+		_, _ = fmt.Fprint(w, "metadata-project")
 	}))
 	defer srv.Close()
 	setMetadataURL(t, srv.URL)
@@ -1062,7 +1062,7 @@ func TestResolveGCPProjectID_EnvVarTakesPrecedence(t *testing.T) {
 
 func TestResolveGCPProjectID_FallsBackToMetadataServer(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, "metadata-project")
+		_, _ = fmt.Fprint(w, "metadata-project")
 	}))
 	defer srv.Close()
 	setMetadataURL(t, srv.URL)
