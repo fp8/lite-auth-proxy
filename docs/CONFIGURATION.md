@@ -346,6 +346,8 @@ All configuration values can be overridden using environment variables with the 
 | `PROXY_ADMIN_JWT_ISSUER` | `admin.jwt.issuer` | string |
 | `PROXY_ADMIN_JWT_AUDIENCE` | `admin.jwt.audience` | string |
 | `PROXY_ADMIN_JWT_ALLOWED_EMAILS` | `admin.jwt.allowed_emails` | comma-separated string |
+| `PROXY_ADMIN_JWT_FILTERS_<CLAIM>` | `admin.jwt.filters.<claim>` | string (dynamic key) |
+| `PROXY_ADMIN_JWT_MAPPINGS_<CLAIM>` | `admin.jwt.mappings.<claim>` | string (dynamic key) |
 
 ### Storage Overrides
 

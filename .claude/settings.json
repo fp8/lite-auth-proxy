@@ -30,6 +30,7 @@
       "Bash(git *)",
       "Bash(gh *)",
       "Bash(go *)",
+      "Bash(/opt/homebrew/bin/go *)",
       "Bash(make *)",
       "Bash(gcloud * list*)",
       "Bash(gcloud * describe*)",

@@ -100,6 +100,20 @@ All config fields map to `PROXY_<SECTION>_<FIELD>` env vars (uppercase, `_` as s
 
 When adding new config fields, add the corresponding env var override in `internal/config/config.go` and document it in `docs/ENVIRONMENT.md`.
 
+### Configuration Change Checklist
+
+When **adding** a config field or env var override:
+1. Add the `PROXY_*` env var override in `internal/config/config.go` (`applyEnvOverrides`)
+2. Add the env var + assertion to `TestEnvVarOverridesComplete` in `internal/config/config_test.go`
+3. Add the env var to the `testedEnvVars` or `testedMapPrefixes` map in `TestEnvOverridesCoverageGuard` (same file) — this guard test parses the source and will **fail the build** if a new `os.Getenv("PROXY_...")` or `applyJWTMapOverrides` call is not covered
+4. Document the env var in `docs/CONFIGURATION.md` (in the appropriate "Overrides" table)
+
+When **removing** a config field or env var override:
+1. Remove the override from `applyEnvOverrides` in `internal/config/config.go`
+2. Remove the env var + assertion from `TestEnvVarOverridesComplete`
+3. Remove the entry from `testedEnvVars`/`testedMapPrefixes` in `TestEnvOverridesCoverageGuard`
+4. Remove the env var from `docs/CONFIGURATION.md`
+
 ## Testing
 
 ```bash

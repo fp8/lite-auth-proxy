@@ -446,6 +446,8 @@ func applyEnvOverrides(config *Config) error {
 	if val := os.Getenv("PROXY_ADMIN_JWT_ALLOWED_EMAILS"); val != "" {
 		config.Admin.JWT.AllowedEmails = splitCSV(val)
 	}
+	config.Admin.JWT.Filters = applyJWTMapOverrides("PROXY_ADMIN_JWT_FILTERS_", config.Admin.JWT.Filters)
+	config.Admin.JWT.Mappings = applyJWTMapOverrides("PROXY_ADMIN_JWT_MAPPINGS_", config.Admin.JWT.Mappings)
 
 	return nil
 }

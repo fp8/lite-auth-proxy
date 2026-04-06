@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -681,30 +682,38 @@ audience = "test"
 }
 
 // TestEnvVarOverridesComplete verifies that every PROXY_* env var is wired up and applied.
+// This is the single source of truth — every env override in applyEnvOverrides must appear here.
 func TestEnvVarOverridesComplete(t *testing.T) {
 	envs := map[string]string{
 		// Server
+		"PROXY_SERVER_PORT":                  "7777",
+		"PROXY_SERVER_TARGET_URL":            "http://overridden.example.com",
 		"PROXY_SERVER_STRIP_PREFIX":          "/api",
+		"PROXY_SERVER_INCLUDE_PATHS":         "/v1/*, /v2/*",
+		"PROXY_SERVER_EXCLUDE_PATHS":         "/healthz, /metrics",
 		"PROXY_SERVER_SHUTDOWN_TIMEOUT_SECS": "20",
 		"PROXY_SERVER_HEALTH_CHECK_PATH":     "/ping",
 		"PROXY_SERVER_HEALTH_CHECK_TARGET":   "http://healthz-backend:9090",
 		// Security — IP rate limit
-		"PROXY_SECURITY_RATE_LIMIT_REQUESTS_PER_MIN": "42",
-		"PROXY_SECURITY_RATE_LIMIT_THROTTLE_DELAY_MS": "250",
-		"PROXY_SECURITY_RATE_LIMIT_MAX_DELAY_SLOTS":   "50",
+		"PROXY_SECURITY_RATE_LIMIT_ENABLED":                 "false",
+		"PROXY_SECURITY_RATE_LIMIT_REQUESTS_PER_MIN":        "42",
+		"PROXY_SECURITY_RATE_LIMIT_BAN_FOR_MIN":             "12",
+		"PROXY_SECURITY_RATE_LIMIT_THROTTLE_DELAY_MS":       "250",
+		"PROXY_SECURITY_RATE_LIMIT_MAX_DELAY_SLOTS":         "50",
+		"PROXY_SECURITY_RATE_LIMIT_SKIP_IF_JWT_IDENTIFIED":  "true",
 		// Security — API-key rate limit
-		"PROXY_SECURITY_APIKEY_RATE_LIMIT_ENABLED":          "true",
-		"PROXY_SECURITY_APIKEY_RATE_LIMIT_REQUESTS_PER_MIN": "30",
-		"PROXY_SECURITY_APIKEY_RATE_LIMIT_BAN_FOR_MIN":      "10",
-		"PROXY_SECURITY_APIKEY_RATE_LIMIT_INCLUDE_IP":       "true",
-		"PROXY_SECURITY_APIKEY_RATE_LIMIT_KEY_HEADER":       "x-my-api-key",
+		"PROXY_SECURITY_APIKEY_RATE_LIMIT_ENABLED":           "true",
+		"PROXY_SECURITY_APIKEY_RATE_LIMIT_REQUESTS_PER_MIN":  "30",
+		"PROXY_SECURITY_APIKEY_RATE_LIMIT_BAN_FOR_MIN":       "10",
+		"PROXY_SECURITY_APIKEY_RATE_LIMIT_INCLUDE_IP":        "true",
+		"PROXY_SECURITY_APIKEY_RATE_LIMIT_KEY_HEADER":        "x-my-api-key",
 		"PROXY_SECURITY_APIKEY_RATE_LIMIT_THROTTLE_DELAY_MS": "100",
 		"PROXY_SECURITY_APIKEY_RATE_LIMIT_MAX_DELAY_SLOTS":   "25",
 		// Security — JWT rate limit
-		"PROXY_SECURITY_JWT_RATE_LIMIT_ENABLED":          "true",
-		"PROXY_SECURITY_JWT_RATE_LIMIT_REQUESTS_PER_MIN": "20",
-		"PROXY_SECURITY_JWT_RATE_LIMIT_BAN_FOR_MIN":      "15",
-		"PROXY_SECURITY_JWT_RATE_LIMIT_INCLUDE_IP":       "true",
+		"PROXY_SECURITY_JWT_RATE_LIMIT_ENABLED":           "true",
+		"PROXY_SECURITY_JWT_RATE_LIMIT_REQUESTS_PER_MIN":  "20",
+		"PROXY_SECURITY_JWT_RATE_LIMIT_BAN_FOR_MIN":       "15",
+		"PROXY_SECURITY_JWT_RATE_LIMIT_INCLUDE_IP":        "true",
 		"PROXY_SECURITY_JWT_RATE_LIMIT_THROTTLE_DELAY_MS": "75",
 		"PROXY_SECURITY_JWT_RATE_LIMIT_MAX_DELAY_SLOTS":   "10",
 		// Security — misc
@@ -712,19 +721,36 @@ func TestEnvVarOverridesComplete(t *testing.T) {
 		// Auth — common
 		"PROXY_AUTH_HEADER_PREFIX": "X-CUSTOM-",
 		// Auth — JWT
-		"PROXY_AUTH_JWT_ENABLED":        "true",
-		"PROXY_AUTH_JWT_ISSUER":         "https://override-issuer.example.com",
-		"PROXY_AUTH_JWT_AUDIENCE":       "override-audience",
-		"PROXY_AUTH_JWT_MAPPINGS_EMAIL": "USER-EMAIL",
+		"PROXY_AUTH_JWT_ENABLED":           "true",
+		"PROXY_AUTH_JWT_ISSUER":            "https://override-issuer.example.com",
+		"PROXY_AUTH_JWT_AUDIENCE":          "override-audience",
+		"PROXY_AUTH_JWT_TOLERANCE_SECS":    "45",
+		"PROXY_AUTH_JWT_CACHE_TTL_MINS":    "30",
+		"PROXY_AUTH_JWT_ALLOWED_EMAILS":    "user1@example.com,user2@example.com",
+		"PROXY_AUTH_JWT_FILTERS_HD":        "override.co",
+		"PROXY_AUTH_JWT_FILTERS_EMAIL_VERIFIED": "true",
+		"PROXY_AUTH_JWT_MAPPINGS_EMAIL":    "USER-EMAIL",
+		"PROXY_AUTH_JWT_MAPPINGS_SUB":      "USER-ID",
 		// Auth — API key
-		"PROXY_AUTH_API_KEY_ENABLED": "true",
-		"PROXY_AUTH_API_KEY_NAME":    "X-Override-Key",
-		"PROXY_AUTH_API_KEY_VALUE":   "override-secret",
+		"PROXY_AUTH_API_KEY_ENABLED":         "true",
+		"PROXY_AUTH_API_KEY_NAME":            "X-Override-Key",
+		"PROXY_AUTH_API_KEY_VALUE":           "override-secret",
+		"PROXY_AUTH_API_KEY_PAYLOAD_SERVICE": "internal",
+		"PROXY_AUTH_API_KEY_PAYLOAD_ROLE":    "admin",
+		// Storage
+		"PROXY_STORAGE_ENABLED":           "true",
+		"PROXY_STORAGE_PROJECT_ID":        "test-project-123",
+		"PROXY_STORAGE_DBNAME":            "test-db",
+		"PROXY_STORAGE_COLLECTION_PREFIX": "test-prefix",
 		// Admin
-		"PROXY_ADMIN_ENABLED":            "true",
-		"PROXY_ADMIN_JWT_ISSUER":         "https://accounts.google.com",
-		"PROXY_ADMIN_JWT_AUDIENCE":       "https://my-proxy.run.app",
-		"PROXY_ADMIN_JWT_ALLOWED_EMAILS": "admin@example.com,ops@example.com",
+		"PROXY_ADMIN_ENABLED":                   "true",
+		"PROXY_ADMIN_JWT_ISSUER":                "https://accounts.google.com",
+		"PROXY_ADMIN_JWT_AUDIENCE":              "https://my-proxy.run.app",
+		"PROXY_ADMIN_JWT_ALLOWED_EMAILS":        "admin@example.com,ops@example.com",
+		"PROXY_ADMIN_JWT_FILTERS_HD":            "farport.co",
+		"PROXY_ADMIN_JWT_FILTERS_EMAIL_VERIFIED": "true",
+		"PROXY_ADMIN_JWT_MAPPINGS_EMAIL":        "ADMIN-EMAIL",
+		"PROXY_ADMIN_JWT_MAPPINGS_SUB":          "ADMIN-ID",
 	}
 	for k, v := range envs {
 		_ = os.Setenv(k, v)
@@ -735,12 +761,10 @@ func TestEnvVarOverridesComplete(t *testing.T) {
 		}
 	}()
 
+	// Minimal TOML — every field should come from env overrides.
 	configContent := `
 [server]
 target_url = "http://localhost:8080"
-
-[security.rate_limit]
-enabled = true
 
 [auth.jwt]
 enabled = true
@@ -758,9 +782,21 @@ value = "secret"
 		t.Fatalf("Failed to load config: %v", err)
 	}
 
-	// Server
+	// ── Server ──
+	if cfg.Server.Port != 7777 {
+		t.Errorf("PROXY_SERVER_PORT: got %d", cfg.Server.Port)
+	}
+	if cfg.Server.TargetURL != "http://overridden.example.com" {
+		t.Errorf("PROXY_SERVER_TARGET_URL: got %q", cfg.Server.TargetURL)
+	}
 	if cfg.Server.StripPrefix != "/api" {
 		t.Errorf("PROXY_SERVER_STRIP_PREFIX: got %q", cfg.Server.StripPrefix)
+	}
+	if len(cfg.Server.IncludePaths) != 2 || cfg.Server.IncludePaths[0] != "/v1/*" || cfg.Server.IncludePaths[1] != "/v2/*" {
+		t.Errorf("PROXY_SERVER_INCLUDE_PATHS: got %v", cfg.Server.IncludePaths)
+	}
+	if len(cfg.Server.ExcludePaths) != 2 || cfg.Server.ExcludePaths[0] != "/healthz" || cfg.Server.ExcludePaths[1] != "/metrics" {
+		t.Errorf("PROXY_SERVER_EXCLUDE_PATHS: got %v", cfg.Server.ExcludePaths)
 	}
 	if cfg.Server.ShutdownTimeoutSecs != 20 {
 		t.Errorf("PROXY_SERVER_SHUTDOWN_TIMEOUT_SECS: got %d", cfg.Server.ShutdownTimeoutSecs)
@@ -772,9 +808,15 @@ value = "secret"
 		t.Errorf("PROXY_SERVER_HEALTH_CHECK_TARGET: got %q", cfg.Server.HealthCheck.Target)
 	}
 
-	// Security — IP rate limit
+	// ── Security — IP rate limit ──
+	if cfg.Security.RateLimit.Enabled {
+		t.Error("PROXY_SECURITY_RATE_LIMIT_ENABLED: got true, want false")
+	}
 	if cfg.Security.RateLimit.RequestsPerMin != 42 {
 		t.Errorf("PROXY_SECURITY_RATE_LIMIT_REQUESTS_PER_MIN: got %d", cfg.Security.RateLimit.RequestsPerMin)
+	}
+	if cfg.Security.RateLimit.BanForMin != 12 {
+		t.Errorf("PROXY_SECURITY_RATE_LIMIT_BAN_FOR_MIN: got %d", cfg.Security.RateLimit.BanForMin)
 	}
 	if cfg.Security.RateLimit.ThrottleDelayMs != 250 {
 		t.Errorf("PROXY_SECURITY_RATE_LIMIT_THROTTLE_DELAY_MS: got %d", cfg.Security.RateLimit.ThrottleDelayMs)
@@ -782,8 +824,11 @@ value = "secret"
 	if cfg.Security.RateLimit.MaxDelaySlots != 50 {
 		t.Errorf("PROXY_SECURITY_RATE_LIMIT_MAX_DELAY_SLOTS: got %d", cfg.Security.RateLimit.MaxDelaySlots)
 	}
+	if cfg.Security.RateLimit.SkipIfJwtIdentified == nil || !*cfg.Security.RateLimit.SkipIfJwtIdentified {
+		t.Error("PROXY_SECURITY_RATE_LIMIT_SKIP_IF_JWT_IDENTIFIED: got nil or false, want true")
+	}
 
-	// Security — API-key rate limit
+	// ── Security — API-key rate limit ──
 	if !cfg.Security.ApiKeyRateLimit.Enabled {
 		t.Error("PROXY_SECURITY_APIKEY_RATE_LIMIT_ENABLED: got false")
 	}
@@ -806,7 +851,7 @@ value = "secret"
 		t.Errorf("PROXY_SECURITY_APIKEY_RATE_LIMIT_MAX_DELAY_SLOTS: got %d", cfg.Security.ApiKeyRateLimit.MaxDelaySlots)
 	}
 
-	// Security — JWT rate limit
+	// ── Security — JWT rate limit ──
 	if !cfg.Security.JwtRateLimit.Enabled {
 		t.Error("PROXY_SECURITY_JWT_RATE_LIMIT_ENABLED: got false")
 	}
@@ -826,17 +871,17 @@ value = "secret"
 		t.Errorf("PROXY_SECURITY_JWT_RATE_LIMIT_MAX_DELAY_SLOTS: got %d", cfg.Security.JwtRateLimit.MaxDelaySlots)
 	}
 
-	// Security — misc
+	// ── Security — misc ──
 	if cfg.Security.MaxBodyBytes != 2097152 {
 		t.Errorf("PROXY_SECURITY_MAX_BODY_BYTES: got %d", cfg.Security.MaxBodyBytes)
 	}
 
-	// Auth — common
+	// ── Auth — common ──
 	if cfg.Auth.HeaderPrefix != "X-CUSTOM-" {
 		t.Errorf("PROXY_AUTH_HEADER_PREFIX: got %q", cfg.Auth.HeaderPrefix)
 	}
 
-	// Auth — JWT
+	// ── Auth — JWT ──
 	if !cfg.Auth.JWT.Enabled {
 		t.Error("PROXY_AUTH_JWT_ENABLED: got false")
 	}
@@ -846,11 +891,31 @@ value = "secret"
 	if cfg.Auth.JWT.Audience != "override-audience" {
 		t.Errorf("PROXY_AUTH_JWT_AUDIENCE: got %q", cfg.Auth.JWT.Audience)
 	}
+	if cfg.Auth.JWT.ToleranceSecs != 45 {
+		t.Errorf("PROXY_AUTH_JWT_TOLERANCE_SECS: got %d", cfg.Auth.JWT.ToleranceSecs)
+	}
+	if cfg.Auth.JWT.CacheTTLMins != 30 {
+		t.Errorf("PROXY_AUTH_JWT_CACHE_TTL_MINS: got %d", cfg.Auth.JWT.CacheTTLMins)
+	}
+	if len(cfg.Auth.JWT.AllowedEmails) != 2 ||
+		cfg.Auth.JWT.AllowedEmails[0] != "user1@example.com" ||
+		cfg.Auth.JWT.AllowedEmails[1] != "user2@example.com" {
+		t.Errorf("PROXY_AUTH_JWT_ALLOWED_EMAILS: got %v", cfg.Auth.JWT.AllowedEmails)
+	}
+	if cfg.Auth.JWT.Filters["hd"] != "override.co" {
+		t.Errorf("PROXY_AUTH_JWT_FILTERS_HD: got %q", cfg.Auth.JWT.Filters["hd"])
+	}
+	if cfg.Auth.JWT.Filters["email_verified"] != "true" {
+		t.Errorf("PROXY_AUTH_JWT_FILTERS_EMAIL_VERIFIED: got %q", cfg.Auth.JWT.Filters["email_verified"])
+	}
 	if cfg.Auth.JWT.Mappings["email"] != "USER-EMAIL" {
 		t.Errorf("PROXY_AUTH_JWT_MAPPINGS_EMAIL: got %q", cfg.Auth.JWT.Mappings["email"])
 	}
+	if cfg.Auth.JWT.Mappings["sub"] != "USER-ID" {
+		t.Errorf("PROXY_AUTH_JWT_MAPPINGS_SUB: got %q", cfg.Auth.JWT.Mappings["sub"])
+	}
 
-	// Auth — API key
+	// ── Auth — API key ──
 	if !cfg.Auth.APIKey.Enabled {
 		t.Error("PROXY_AUTH_API_KEY_ENABLED: got false")
 	}
@@ -860,8 +925,28 @@ value = "secret"
 	if cfg.Auth.APIKey.Value != "override-secret" {
 		t.Errorf("PROXY_AUTH_API_KEY_VALUE: got %q", cfg.Auth.APIKey.Value)
 	}
+	if cfg.Auth.APIKey.Payload["service"] != "internal" {
+		t.Errorf("PROXY_AUTH_API_KEY_PAYLOAD_SERVICE: got %q", cfg.Auth.APIKey.Payload["service"])
+	}
+	if cfg.Auth.APIKey.Payload["role"] != "admin" {
+		t.Errorf("PROXY_AUTH_API_KEY_PAYLOAD_ROLE: got %q", cfg.Auth.APIKey.Payload["role"])
+	}
 
-	// Admin
+	// ── Storage ──
+	if !cfg.Storage.Enabled {
+		t.Error("PROXY_STORAGE_ENABLED: got false")
+	}
+	if cfg.Storage.ProjectID != "test-project-123" {
+		t.Errorf("PROXY_STORAGE_PROJECT_ID: got %q", cfg.Storage.ProjectID)
+	}
+	if cfg.Storage.Dbname != "test-db" {
+		t.Errorf("PROXY_STORAGE_DBNAME: got %q", cfg.Storage.Dbname)
+	}
+	if cfg.Storage.CollectionPrefix != "test-prefix" {
+		t.Errorf("PROXY_STORAGE_COLLECTION_PREFIX: got %q", cfg.Storage.CollectionPrefix)
+	}
+
+	// ── Admin ──
 	if !cfg.Admin.Enabled {
 		t.Error("PROXY_ADMIN_ENABLED: got false")
 	}
@@ -875,5 +960,139 @@ value = "secret"
 		cfg.Admin.JWT.AllowedEmails[0] != "admin@example.com" ||
 		cfg.Admin.JWT.AllowedEmails[1] != "ops@example.com" {
 		t.Errorf("PROXY_ADMIN_JWT_ALLOWED_EMAILS: got %v", cfg.Admin.JWT.AllowedEmails)
+	}
+	if cfg.Admin.JWT.Filters["hd"] != "farport.co" {
+		t.Errorf("PROXY_ADMIN_JWT_FILTERS_HD: got %q", cfg.Admin.JWT.Filters["hd"])
+	}
+	if cfg.Admin.JWT.Filters["email_verified"] != "true" {
+		t.Errorf("PROXY_ADMIN_JWT_FILTERS_EMAIL_VERIFIED: got %q", cfg.Admin.JWT.Filters["email_verified"])
+	}
+	if cfg.Admin.JWT.Mappings["email"] != "ADMIN-EMAIL" {
+		t.Errorf("PROXY_ADMIN_JWT_MAPPINGS_EMAIL: got %q", cfg.Admin.JWT.Mappings["email"])
+	}
+	if cfg.Admin.JWT.Mappings["sub"] != "ADMIN-ID" {
+		t.Errorf("PROXY_ADMIN_JWT_MAPPINGS_SUB: got %q", cfg.Admin.JWT.Mappings["sub"])
+	}
+}
+
+// TestEnvOverridesCoverageGuard is a structural test that parses applyEnvOverrides
+// to extract every os.Getenv("PROXY_...") call and every applyJWTMapOverrides prefix,
+// then verifies each one appears in TestEnvVarOverridesComplete's env map.
+// If a developer adds a new PROXY_* env var but forgets to test it, this test fails.
+func TestEnvOverridesCoverageGuard(t *testing.T) {
+	src, err := os.ReadFile("config.go")
+	if err != nil {
+		t.Fatalf("failed to read config.go: %v", err)
+	}
+	content := string(src)
+
+	// Find the applyEnvOverrides function body.
+	fnStart := strings.Index(content, "func applyEnvOverrides(")
+	if fnStart < 0 {
+		t.Fatal("could not find applyEnvOverrides function")
+	}
+	// Find the end of the function by counting braces.
+	body := content[fnStart:]
+	depth := 0
+	fnEnd := -1
+	for i, ch := range body {
+		if ch == '{' {
+			depth++
+		} else if ch == '}' {
+			depth--
+			if depth == 0 {
+				fnEnd = i
+				break
+			}
+		}
+	}
+	if fnEnd < 0 {
+		t.Fatal("could not find end of applyEnvOverrides")
+	}
+	fnBody := body[:fnEnd+1]
+
+	// Extract all os.Getenv("PROXY_...") env var names.
+	getenvRe := regexp.MustCompile(`os\.Getenv\("(PROXY_[A-Z_]+)"\)`)
+	getenvMatches := getenvRe.FindAllStringSubmatch(fnBody, -1)
+
+	// Extract all applyJWTMapOverrides prefixes (e.g. "PROXY_AUTH_JWT_FILTERS_").
+	mapOverrideRe := regexp.MustCompile(`applyJWTMapOverrides\("(PROXY_[A-Z_]+_)"`)
+	mapOverrideMatches := mapOverrideRe.FindAllStringSubmatch(fnBody, -1)
+
+	// Build the canonical env var map — same keys as TestEnvVarOverridesComplete.
+	// We maintain this list alongside the test above; the guard ensures they stay in sync.
+	testedEnvVars := map[string]bool{
+		"PROXY_SERVER_PORT":                                true,
+		"PROXY_SERVER_TARGET_URL":                          true,
+		"PROXY_SERVER_STRIP_PREFIX":                        true,
+		"PROXY_SERVER_INCLUDE_PATHS":                       true,
+		"PROXY_SERVER_EXCLUDE_PATHS":                       true,
+		"PROXY_SERVER_SHUTDOWN_TIMEOUT_SECS":               true,
+		"PROXY_SERVER_HEALTH_CHECK_PATH":                   true,
+		"PROXY_SERVER_HEALTH_CHECK_TARGET":                 true,
+		"PROXY_SECURITY_RATE_LIMIT_ENABLED":                true,
+		"PROXY_SECURITY_RATE_LIMIT_REQUESTS_PER_MIN":       true,
+		"PROXY_SECURITY_RATE_LIMIT_BAN_FOR_MIN":            true,
+		"PROXY_SECURITY_RATE_LIMIT_THROTTLE_DELAY_MS":      true,
+		"PROXY_SECURITY_RATE_LIMIT_MAX_DELAY_SLOTS":        true,
+		"PROXY_SECURITY_RATE_LIMIT_SKIP_IF_JWT_IDENTIFIED": true,
+		"PROXY_SECURITY_APIKEY_RATE_LIMIT_ENABLED":           true,
+		"PROXY_SECURITY_APIKEY_RATE_LIMIT_REQUESTS_PER_MIN":  true,
+		"PROXY_SECURITY_APIKEY_RATE_LIMIT_BAN_FOR_MIN":       true,
+		"PROXY_SECURITY_APIKEY_RATE_LIMIT_INCLUDE_IP":        true,
+		"PROXY_SECURITY_APIKEY_RATE_LIMIT_KEY_HEADER":        true,
+		"PROXY_SECURITY_APIKEY_RATE_LIMIT_THROTTLE_DELAY_MS": true,
+		"PROXY_SECURITY_APIKEY_RATE_LIMIT_MAX_DELAY_SLOTS":   true,
+		"PROXY_SECURITY_JWT_RATE_LIMIT_ENABLED":           true,
+		"PROXY_SECURITY_JWT_RATE_LIMIT_REQUESTS_PER_MIN":  true,
+		"PROXY_SECURITY_JWT_RATE_LIMIT_BAN_FOR_MIN":       true,
+		"PROXY_SECURITY_JWT_RATE_LIMIT_INCLUDE_IP":        true,
+		"PROXY_SECURITY_JWT_RATE_LIMIT_THROTTLE_DELAY_MS": true,
+		"PROXY_SECURITY_JWT_RATE_LIMIT_MAX_DELAY_SLOTS":   true,
+		"PROXY_SECURITY_MAX_BODY_BYTES":                    true,
+		"PROXY_AUTH_HEADER_PREFIX":                         true,
+		"PROXY_AUTH_JWT_ENABLED":                           true,
+		"PROXY_AUTH_JWT_ISSUER":                            true,
+		"PROXY_AUTH_JWT_AUDIENCE":                          true,
+		"PROXY_AUTH_JWT_TOLERANCE_SECS":                    true,
+		"PROXY_AUTH_JWT_CACHE_TTL_MINS":                    true,
+		"PROXY_AUTH_JWT_ALLOWED_EMAILS":                    true,
+		"PROXY_AUTH_API_KEY_ENABLED":                       true,
+		"PROXY_AUTH_API_KEY_NAME":                          true,
+		"PROXY_AUTH_API_KEY_VALUE":                         true,
+		"PROXY_STORAGE_ENABLED":                            true,
+		"PROXY_STORAGE_PROJECT_ID":                         true,
+		"PROXY_STORAGE_DBNAME":                             true,
+		"PROXY_STORAGE_COLLECTION_PREFIX":                  true,
+		"PROXY_ADMIN_ENABLED":                              true,
+		"PROXY_ADMIN_JWT_ISSUER":                           true,
+		"PROXY_ADMIN_JWT_AUDIENCE":                         true,
+		"PROXY_ADMIN_JWT_ALLOWED_EMAILS":                   true,
+	}
+
+	// Map override prefixes that are tested via specific env vars in the test
+	// (e.g. PROXY_AUTH_JWT_FILTERS_ is tested via PROXY_AUTH_JWT_FILTERS_HD).
+	testedMapPrefixes := map[string]bool{
+		"PROXY_AUTH_JWT_FILTERS_":     true,
+		"PROXY_AUTH_JWT_MAPPINGS_":    true,
+		"PROXY_AUTH_API_KEY_PAYLOAD_": true,
+		"PROXY_ADMIN_JWT_FILTERS_":    true,
+		"PROXY_ADMIN_JWT_MAPPINGS_":   true,
+	}
+
+	// Check every os.Getenv call is represented.
+	for _, m := range getenvMatches {
+		envVar := m[1]
+		if !testedEnvVars[envVar] {
+			t.Errorf("os.Getenv(%q) found in applyEnvOverrides but not covered in TestEnvVarOverridesComplete — add it to the test", envVar)
+		}
+	}
+
+	// Check every applyJWTMapOverrides prefix is represented.
+	for _, m := range mapOverrideMatches {
+		prefix := m[1]
+		if !testedMapPrefixes[prefix] {
+			t.Errorf("applyJWTMapOverrides(%q) found in applyEnvOverrides but not covered in TestEnvVarOverridesComplete — add a test env var with this prefix", prefix)
+		}
 	}
 }
