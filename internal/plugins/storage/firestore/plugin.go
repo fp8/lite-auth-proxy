@@ -103,5 +103,8 @@ func resolveProjectID(cfg *config.Config) string {
 	if cfg.Storage.ProjectID != "" {
 		return cfg.Storage.ProjectID
 	}
-	return os.Getenv("GOOGLE_CLOUD_PROJECT")
+	if v := os.Getenv("GOOGLE_CLOUD_PROJECT"); v != "" {
+		return v
+	}
+	return config.FetchGCPProjectID()
 }

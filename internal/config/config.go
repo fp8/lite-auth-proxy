@@ -3,11 +3,13 @@ package config
 import (
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 )
@@ -588,12 +590,16 @@ func setDefaults(config *Config) {
 	resolveGCPProjectID(config)
 }
 
+// GCPMetadataProjectURL is the metadata server endpoint for the GCP project ID.
+// Overridable in tests.
+var GCPMetadataProjectURL = "http://metadata.google.internal/computeMetadata/v1/project/project-id"
+
 // resolveGCPProjectID attempts to resolve GOOGLE_CLOUD_PROJECT from env or metadata server
 func resolveGCPProjectID(config *Config) {
 	projectID := os.Getenv("GOOGLE_CLOUD_PROJECT")
 	if projectID == "" {
 		// Try to fetch from GCP metadata server
-		projectID = fetchGCPProjectID()
+		projectID = FetchGCPProjectID()
 	}
 
 	// Replace placeholder in issuer and audience
@@ -603,34 +609,40 @@ func resolveGCPProjectID(config *Config) {
 	}
 }
 
-// fetchGCPProjectID fetches GOOGLE_CLOUD_PROJECT from the metadata server
-func fetchGCPProjectID() string {
-	client := &http.Client{
-		Timeout: 1 * 1e9, // 1 second timeout
-	}
-
-	req, err := http.NewRequest("GET", "http://metadata.google.internal/computeMetadata/v1/project/project-id", nil)
+// FetchGCPProjectID fetches the GCP project ID from the metadata server.
+// Returns an empty string if the server is unreachable or returns an error.
+// Used as a fallback when GOOGLE_CLOUD_PROJECT is not set in the environment.
+func FetchGCPProjectID() string {
+	slog.Default().Debug("GOOGLE_CLOUD_PROJECT not set; querying GCP Metadata Server", "url", GCPMetadataProjectURL)
+	client := &http.Client{Timeout: time.Second}
+	req, err := http.NewRequest(http.MethodGet, GCPMetadataProjectURL, nil)
 	if err != nil {
+		slog.Default().Warn("GCP Metadata Server: failed to build request", "error", err)
 		return ""
 	}
 	req.Header.Set("Metadata-Flavor", "Google")
-
 	resp, err := client.Do(req)
 	if err != nil {
+		slog.Default().Debug("GCP Metadata Server: not reachable", "error", err)
 		return ""
 	}
 	defer func() { _ = resp.Body.Close() }()
-
 	if resp.StatusCode != http.StatusOK {
+		slog.Default().Debug("GCP Metadata Server: unexpected status", "status", resp.StatusCode)
 		return ""
 	}
-
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
+		slog.Default().Warn("GCP Metadata Server: failed to read response", "error", err)
 		return ""
 	}
-
-	return strings.TrimSpace(string(body))
+	projectID := strings.TrimSpace(string(body))
+	if projectID != "" {
+		slog.Default().Info("GCP Metadata Server: resolved project ID", "project_id", projectID)
+	} else {
+		slog.Default().Warn("GCP Metadata Server: returned empty project ID")
+	}
+	return projectID
 }
 
 // validate checks that the configuration is valid

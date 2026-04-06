@@ -128,6 +128,11 @@ func NewHandlerWithDeps(cfg *config.Config, logger *slog.Logger) (http.Handler, 
 		// Phase 2: Storage backend (optional, replaces defaults).
 		storagePersist := false
 		if sb := plugin.StorageBackend(); sb != nil && cfg.Storage.Enabled {
+			if cv, ok := sb.(plugin.ConfigValidator); ok {
+				if err := cv.ValidateConfig(cfg); err != nil {
+					return nil, nil, fmt.Errorf("storage plugin %q config validation: %w", sb.Name(), err)
+				}
+			}
 			if err := sb.Open(cfg, logger); err != nil {
 				return nil, nil, fmt.Errorf("storage plugin %q: open: %w", sb.Name(), err)
 			}

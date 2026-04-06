@@ -1,6 +1,9 @@
 package config
 
 import (
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -972,6 +975,112 @@ value = "secret"
 	}
 	if cfg.Admin.JWT.Mappings["sub"] != "ADMIN-ID" {
 		t.Errorf("PROXY_ADMIN_JWT_MAPPINGS_SUB: got %q", cfg.Admin.JWT.Mappings["sub"])
+	}
+}
+
+// --- GOOGLE_CLOUD_PROJECT resolution tests ---
+
+// setMetadataURL replaces GCPMetadataProjectURL for the duration of the test.
+func setMetadataURL(t *testing.T, url string) {
+	t.Helper()
+	orig := GCPMetadataProjectURL
+	GCPMetadataProjectURL = url
+	t.Cleanup(func() { GCPMetadataProjectURL = orig })
+}
+
+func TestFetchGCPProjectID_MetadataServerCalled(t *testing.T) {
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		if r.Header.Get("Metadata-Flavor") != "Google" {
+			t.Errorf("expected Metadata-Flavor: Google, got %q", r.Header.Get("Metadata-Flavor"))
+		}
+		fmt.Fprint(w, "gcp-project-from-metadata")
+	}))
+	defer srv.Close()
+	setMetadataURL(t, srv.URL)
+	t.Setenv("GOOGLE_CLOUD_PROJECT", "")
+
+	got := FetchGCPProjectID()
+	if !called {
+		t.Error("GCP Metadata Server was not called")
+	}
+	if got != "gcp-project-from-metadata" {
+		t.Errorf("expected project ID from metadata server, got %q", got)
+	}
+}
+
+func TestFetchGCPProjectID_ServerUnreachable(t *testing.T) {
+	setMetadataURL(t, "http://127.0.0.1:1") // nothing listening
+	got := FetchGCPProjectID()
+	if got != "" {
+		t.Errorf("expected empty project ID when server is unreachable, got %q", got)
+	}
+}
+
+func TestFetchGCPProjectID_NonOKStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+	setMetadataURL(t, srv.URL)
+
+	got := FetchGCPProjectID()
+	if got != "" {
+		t.Errorf("expected empty project ID on non-200 response, got %q", got)
+	}
+}
+
+func TestResolveGCPProjectID_EnvVarTakesPrecedence(t *testing.T) {
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		fmt.Fprint(w, "metadata-project")
+	}))
+	defer srv.Close()
+	setMetadataURL(t, srv.URL)
+	t.Setenv("GOOGLE_CLOUD_PROJECT", "env-project")
+
+	cfg := &Config{
+		Auth: AuthConfig{JWT: JWTConfig{
+			Issuer:   "https://securetoken.google.com/{{ENV.GOOGLE_CLOUD_PROJECT}}",
+			Audience: "{{ENV.GOOGLE_CLOUD_PROJECT}}",
+		}},
+	}
+	resolveGCPProjectID(cfg)
+
+	if called {
+		t.Error("GCP Metadata Server should not be called when GOOGLE_CLOUD_PROJECT env var is set")
+	}
+	if cfg.Auth.JWT.Issuer != "https://securetoken.google.com/env-project" {
+		t.Errorf("unexpected issuer: %q", cfg.Auth.JWT.Issuer)
+	}
+	if cfg.Auth.JWT.Audience != "env-project" {
+		t.Errorf("unexpected audience: %q", cfg.Auth.JWT.Audience)
+	}
+}
+
+func TestResolveGCPProjectID_FallsBackToMetadataServer(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "metadata-project")
+	}))
+	defer srv.Close()
+	setMetadataURL(t, srv.URL)
+	t.Setenv("GOOGLE_CLOUD_PROJECT", "")
+
+	cfg := &Config{
+		Auth: AuthConfig{JWT: JWTConfig{
+			Issuer:   "https://securetoken.google.com/{{ENV.GOOGLE_CLOUD_PROJECT}}",
+			Audience: "{{ENV.GOOGLE_CLOUD_PROJECT}}",
+		}},
+	}
+	resolveGCPProjectID(cfg)
+
+	if cfg.Auth.JWT.Issuer != "https://securetoken.google.com/metadata-project" {
+		t.Errorf("unexpected issuer: %q", cfg.Auth.JWT.Issuer)
+	}
+	if cfg.Auth.JWT.Audience != "metadata-project" {
+		t.Errorf("unexpected audience: %q", cfg.Auth.JWT.Audience)
 	}
 }
 

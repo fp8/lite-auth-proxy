@@ -1,6 +1,8 @@
 package firestore
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/fp8/lite-auth-proxy/internal/config"
@@ -36,6 +38,16 @@ func TestValidateConfig_NoBackend(t *testing.T) {
 }
 
 func TestValidateConfig_MissingProjectID(t *testing.T) {
+	// Point metadata URL at a server that returns 404 so we don't hit
+	// the real GCP Metadata Server (and avoid a 1-second timeout).
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+	orig := config.GCPMetadataProjectURL
+	config.GCPMetadataProjectURL = srv.URL
+	defer func() { config.GCPMetadataProjectURL = orig }()
+
 	p := &Plugin{}
 	cfg := &config.Config{
 		Storage: config.StorageConfig{Enabled: true},
