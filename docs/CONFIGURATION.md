@@ -182,6 +182,71 @@ role = "admin"
 - Missing claims cause authentication failure
 - Type coercion: numbers converted to strings for comparison
 
+#### Firebase Auth vs Google ID Token
+
+The proxy can be configured to validate two distinct JWT token types, each with a different claim structure. Understanding the difference is critical for correctly setting `issuer`, `audience`, and claim filters.
+
+##### Firebase Authentication Token
+
+Issued by Firebase Auth when a user signs in via email/password, social login, or other Firebase providers. **Does not carry an `hd` (hosted domain) claim** — filter by `email` regex instead.
+
+Example claims:
+```json
+{
+  "iss": "https://securetoken.google.com/my-project",
+  "aud": "my-project",
+  "sub": "lcbPYEMgbeQcws7Qtl1X225mI0i2",
+  "email": "user@example.com",
+  "email_verified": false,
+  "firebase": {
+    "identities": { "email": ["user@example.com"] },
+    "sign_in_provider": "password"
+  }
+}
+```
+
+Configuration:
+```toml
+[auth.jwt]
+enabled  = true
+issuer   = "https://securetoken.google.com/{{ENV.GOOGLE_CLOUD_PROJECT}}"
+audience = "{{ENV.GOOGLE_CLOUD_PROJECT}}"
+
+[auth.jwt.filters]
+email_verified = "true"
+email          = "/.*@example\\.com$/"   # regex — hd claim does not exist in Firebase tokens
+```
+
+##### Google ID Token
+
+Issued by Google OAuth2 when a user authenticates against a Google account. Google Workspace accounts include an `hd` (hosted domain) claim. Use `hd` filtering instead of email regex when all users belong to the same Google Workspace domain.
+
+Example claims:
+```json
+{
+  "iss": "https://accounts.google.com",
+  "aud": "32555940559.apps.googleusercontent.com",
+  "sub": "114789851119851077143",
+  "hd": "example.com",
+  "email": "user@example.com",
+  "email_verified": true
+}
+```
+
+Configuration:
+```toml
+[auth.jwt]
+enabled  = true
+issuer   = "https://accounts.google.com"
+audience = "32555940559.apps.googleusercontent.com"   # OAuth2 client ID
+
+[auth.jwt.filters]
+email_verified = "true"
+hd             = "example.com"   # hosted domain claim — only present in Google ID tokens
+```
+
+> **Key distinction:** Use `hd` filtering only for Google ID tokens. For Firebase tokens, always filter by `email` regex — the `hd` claim will never be present and the request will always fail the filter if `hd` is set.
+
 #### JWT Claim Mappings
 
 Mappings transform JWT claims into HTTP headers forwarded to downstream:

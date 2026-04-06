@@ -23,6 +23,9 @@ help:
 	@echo "  make state-list  # terraform state list"
 	@echo "  make clean-state # remove local state files for current workspace"
 	@echo "  make test        # curl each service URL with a gcloud identity token"
+	@echo ""
+	@echo "Note: backend state is stored in gs://fp8main-terraform. Ensure your credentials"
+	@echo "      have storage.objectAdmin on that bucket regardless of active project."
 
 workspace:
 	@if [[ -z "$(PROJECT)" ]]; then \

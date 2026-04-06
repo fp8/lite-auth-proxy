@@ -68,6 +68,30 @@ config/config-flex.toml    # Default configuration (flex build)
 config/config-lite.toml    # Default configuration (lite build)
 ```
 
+## JWT Configuration: Firebase Auth vs Google ID Token
+
+The flex build uses **two distinct JWT configurations** that must not be conflated:
+
+### `auth.jwt` — Firebase Authentication
+Used to authenticate end-users of the proxied application. Firebase tokens do **not** carry an `hd` (hosted domain) claim. Key claims:
+- `iss`: `https://securetoken.google.com/<project-id>`
+- `aud`: Firebase project ID (e.g. `fp8-candidates-app`)
+- `email`: user's email address
+- `email_verified`: boolean
+- No `hd` claim — **filter by `email` regex**, e.g. `/.*@farport\.co$/`
+
+### `admin.jwt` — Google ID Token
+Used to authenticate administrators via the admin control-plane. Google ID tokens **do** carry an `hd` claim when issued to a Google Workspace account. Key claims:
+- `iss`: `https://accounts.google.com`
+- `aud`: OAuth2 client ID (e.g. `32555940559.apps.googleusercontent.com`)
+- `hd`: hosted domain (e.g. `farport.co`) — **filter by `hd`**
+- `email`: user's email address
+- `email_verified`: always `true` for Google accounts
+
+### Consequence for config and env vars
+- `PROXY_AUTH_JWT_FILTERS_HD` — **do not use** for Firebase; use `PROXY_AUTH_JWT_FILTERS_EMAIL` with a regex instead
+- `PROXY_ADMIN_JWT_FILTERS_HD` — correct for Google ID Token admin auth
+
 ## Config → Env Var Naming Convention
 
 All config fields map to `PROXY_<SECTION>_<FIELD>` env vars (uppercase, `_` as separator). Array/map fields use indexed suffixes. Examples:

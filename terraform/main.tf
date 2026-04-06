@@ -1,3 +1,10 @@
+terraform {
+  backend "gcs" {
+    bucket = "fp8main-terraform"
+    prefix = "lite-auth-proxy"
+  }
+}
+
 provider "google" {
   region = var.region
 }
@@ -79,6 +86,7 @@ resource "google_cloud_run_v2_service" "proxy" {
   ingress = "INGRESS_TRAFFIC_ALL"
 
   template {
+    service_account                  = google_service_account.proxy_sa.email
     timeout                          = "30s"
     max_instance_request_concurrency = 20
 
@@ -176,7 +184,10 @@ resource "google_cloud_run_v2_service" "proxy" {
 
   depends_on = [
     google_project_service.required_apis,
-    data.google_artifact_registry_repository.shared_docker_repo
+    data.google_artifact_registry_repository.shared_docker_repo,
+    google_service_account.proxy_sa,
+    google_project_iam_member.proxy_sa_firestore,
+    google_secret_manager_secret_iam_member.proxy_sa_apikey,
   ]
 }
 
