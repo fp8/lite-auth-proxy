@@ -1,0 +1,40 @@
+# Example Terraform variables file for secure-echo deployment.
+# Copy to terraform.tfvars (auto-loaded) or use as a named var file:
+#   terraform plan -var-file=myproject.tfvars
+
+# GCP project ID (optional; defaults to active gcloud project)
+# project_id = "fp8main"
+
+region = "europe-west1"
+
+proxy_port        = 8888
+memory            = "128Mi" # Options: 128Mi, 256Mi, 512Mi, 1Gi, 2Gi, 4Gi
+cpu               = "1000m" # Options: 1000m (1 vCPU), 2000m, 4000m
+startup_cpu_boost = true
+
+# Services to deploy. Each key becomes the Cloud Run service name.
+# docker_repo_url points to the container image; image_tag is the version.
+# Optional: proxy_environment_variables overrides proxy_default_environment_variables per service.
+services = {
+  "secure-echo-lite" = {
+    docker_repo_url = "europe-docker.pkg.dev/fp8main/docker/lite-auth-proxy"
+    image_tag       = "1.1"
+  }
+  "secure-echo-flex" = {
+    docker_repo_url = "europe-docker.pkg.dev/fp8main/docker/flex-auth-proxy"
+    image_tag       = "1.1"
+  }
+}
+
+# Proxy authentication and configuration (shared across all services unless overridden).
+# Default (shown below) uses Identity tokens issued by `gcloud auth print-identity-token`.
+# To restrict to a specific Google Workspace domain, set PROXY_AUTH_JWT_FILTERS_HD.
+# To use Firebase Auth instead, change PROXY_AUTH_JWT_ISSUER and PROXY_AUTH_JWT_AUDIENCE.
+proxy_default_environment_variables = {
+  PROXY_AUTH_JWT_ISSUER                 = "https://accounts.google.com"
+  PROXY_AUTH_JWT_AUDIENCE               = "32555940559.apps.googleusercontent.com"
+  PROXY_AUTH_JWT_FILTERS_EMAIL_VERIFIED = "true"
+  PROXY_AUTH_JWT_FILTERS_HD             = "example.com" # restrict to your domain
+  PROXY_AUTH_API_KEY_ENABLED            = "true"
+  PROXY_SERVER_HEALTH_CHECK_TARGET      = "http://localhost:8080/healthcheck"
+}

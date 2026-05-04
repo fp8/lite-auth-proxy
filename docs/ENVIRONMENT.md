@@ -128,6 +128,15 @@ export PROXY_AUTH_API_KEY_VALUE=my-secret-key-123
 | `PROXY_ADMIN_JWT_ALLOWED_EMAILS` | string (CSV) | - | Comma-separated service account emails allowed to call the admin API |
 | `PROXY_THROTTLE_RULES` | JSON string | - | Persisted throttle rules loaded on startup (see below) |
 
+### Storage Backend
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `PROXY_STORAGE_ENABLED` | boolean | `false` | Enable persistent storage backend (Firestore) |
+| `PROXY_STORAGE_PROJECT_ID` | string | `GOOGLE_CLOUD_PROJECT` | GCP project ID for storage |
+| `PROXY_STORAGE_DBNAME` | string | `"(default)"` | Firestore database name (e.g. `"flex-auth-proxy"`) |
+| `PROXY_STORAGE_COLLECTION_PREFIX` | string | `"proxy"` | Firestore collection prefix (`[a-z0-9-]` only) |
+
 **Example:**
 ```bash
 export PROXY_ADMIN_ENABLED=true
@@ -252,14 +261,14 @@ docker run -p 8888:8888 \
   -e LOG_LEVEL=info \
   -e PROXY_SERVER_TARGET_URL=http://backend:8080 \
   -e PROXY_AUTH_JWT_ENABLED=true \
-  lite-auth-proxy:latest
+  flex-auth-proxy:latest
 ```
 
 ### Google Cloud Run
 
 ```bash
 gcloud run deploy my-service \
-  --image=gcr.io/my-project/lite-auth-proxy:latest \
+  --image=gcr.io/my-project/flex-auth-proxy:latest \
   --set-env-vars GOOGLE_CLOUD_PROJECT=my-project,\
 LOG_MODE=production,\
 PROXY_SERVER_TARGET_URL=http://backend:8080,\
@@ -316,7 +325,7 @@ PROXY_AUTH_JWT_ENABLED=true
 Load with:
 ```bash
 source .env
-./bin/lite-auth-proxy
+./bin/flex-auth-proxy
 ```
 
 ## Boolean Value Formats
@@ -401,5 +410,6 @@ See [Development Guide](DEVELOPMENT.md#real-world-jwt-tests-firebase) for detail
 ## See Also
 
 - [Configuration Guide](CONFIGURATION.md)
+- [Plugin Guide](PLUGINS.md)
 - [Development Guide](DEVELOPMENT.md)
 - [Deployment Guide](DEPLOYMENT.md)

@@ -271,6 +271,16 @@ func pathMatches(requestPath, pattern string) bool {
 		return re.MatchString(requestPath)
 	}
 
+	// If pattern ends with /*, also match paths with sub-segments.
+	// path.Match("/*", "/abc/def") returns false because * doesn't cross /.
+	// Instead, check that the request path starts with the pattern prefix.
+	if strings.HasSuffix(pattern, "/*") {
+		prefix := pattern[:len(pattern)-1] // e.g. "/*" → "/"
+		if strings.HasPrefix(requestPath, prefix) {
+			return true
+		}
+	}
+
 	matched, err := path.Match(pattern, requestPath)
 	if err != nil {
 		return false

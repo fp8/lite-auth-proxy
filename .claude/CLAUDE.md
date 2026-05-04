@@ -12,19 +12,20 @@ Development guide for AI coding assistants working in this repository.
 
 - **`README.md`** — overview only: key features, quick start, architecture diagram, links to docs. Do NOT add detailed config, API references, or deployment instructions there.
 - **`docs/`** — all detail goes here:
-  - `docs/CONFIGURATION.md` — full config reference
+  - `docs/PLUGINS.md` — plugin architecture, per-plugin config reference, custom builds
+  - `docs/CONFIGURATION.md` — core config reference, cross-plugin scenarios
   - `docs/RATE-LIMITING.md` — rate limiting guide
   - `docs/ENVIRONMENT.md` — env var overrides
   - `docs/API.md` — HTTP endpoints and admin API
   - `docs/ADMIN.md` — Admin control plane, rule lifecycle, serverless caveats
-  - `docs/DEPLOYMENT.md` — Docker, Cloud Run, sidecar setup
+  - `docs/DEPLOYMENT.md` — Docker, Cloud Run, sidecar setup, build variants
   - `docs/DEVELOPMENT.md` — dev setup, testing, debugging
 
 ### 2. Version and Release Notes
 
-- **Version string** lives in `cmd/proxy/main.go` lines 23–24:
+- **Version string** lives in `cmd/flex/main.go` lines 28–31:
   ```go
-  Version = "1.1.1"
+  Version = "1.2.0"
   ```
   Update this on every release.
 
@@ -47,16 +48,49 @@ If you add a new rate-limiting or security knob to `config.go`, check whether it
 ## Code Layout
 
 ```
-cmd/proxy/main.go          # Entry point; version constant
+cmd/flex/main.go           # Flex build entry point (all plugins); version constant
+cmd/lite/main.go           # Lite build entry point (no plugins)
 internal/config/config.go  # Config structs and TOML/env parsing
-internal/admin/            # Admin control-plane (handler, types, rule store)
+internal/plugin/           # Plugin registry and interfaces
+internal/plugins/          # Plugin implementations:
+  ratelimit/               #   Rate limiting plugin (priority 60)
+  admin/                   #   Admin control-plane plugin (priority 50)
+  apikey/                  #   API-key auth plugin (priority 90)
+  storage/firestore/       #   Firestore storage plugin (priority 5)
+internal/store/            # RuleStore/KeyValueStore interfaces and in-memory defaults
+internal/admin/            # Admin handler, types (uses store.Rule via type alias)
 internal/auth/             # JWT and API-key auth
 internal/proxy/            # Middleware pipeline and reverse proxy
 internal/ratelimit/        # Unified rate limiter (IP, API-key, JWT)
 internal/startup/          # Rule loading from PROXY_THROTTLE_RULES
 docs/                      # All detailed documentation
-config/config.toml         # Default configuration
+config/config-flex.toml    # Default configuration (flex build)
+config/config-lite.toml    # Default configuration (lite build)
 ```
+
+## JWT Configuration: Firebase Auth vs Google ID Token
+
+The flex build uses **two distinct JWT configurations** that must not be conflated:
+
+### `auth.jwt` — Firebase Authentication
+Used to authenticate end-users of the proxied application. Firebase tokens do **not** carry an `hd` (hosted domain) claim. Key claims:
+- `iss`: `https://securetoken.google.com/<project-id>`
+- `aud`: Firebase project ID (e.g. `fp8-candidates-app`)
+- `email`: user's email address
+- `email_verified`: boolean
+- No `hd` claim — **filter by `email` regex**, e.g. `/.*@farport\.co$/`
+
+### `admin.jwt` — Google ID Token
+Used to authenticate administrators via the admin control-plane. Google ID tokens **do** carry an `hd` claim when issued to a Google Workspace account. Key claims:
+- `iss`: `https://accounts.google.com`
+- `aud`: OAuth2 client ID (e.g. `32555940559.apps.googleusercontent.com`)
+- `hd`: hosted domain (e.g. `farport.co`) — **filter by `hd`**
+- `email`: user's email address
+- `email_verified`: always `true` for Google accounts
+
+### Consequence for config and env vars
+- `PROXY_AUTH_JWT_FILTERS_HD` — **do not use** for Firebase; use `PROXY_AUTH_JWT_FILTERS_EMAIL` with a regex instead
+- `PROXY_ADMIN_JWT_FILTERS_HD` — correct for Google ID Token admin auth
 
 ## Config → Env Var Naming Convention
 
@@ -66,11 +100,25 @@ All config fields map to `PROXY_<SECTION>_<FIELD>` env vars (uppercase, `_` as s
 
 When adding new config fields, add the corresponding env var override in `internal/config/config.go` and document it in `docs/ENVIRONMENT.md`.
 
+### Configuration Change Checklist
+
+When **adding** a config field or env var override:
+1. Add the `PROXY_*` env var override in `internal/config/config.go` (`applyEnvOverrides`)
+2. Add the env var + assertion to `TestEnvVarOverridesComplete` in `internal/config/config_test.go`
+3. Add the env var to the `testedEnvVars` or `testedMapPrefixes` map in `TestEnvOverridesCoverageGuard` (same file) — this guard test parses the source and will **fail the build** if a new `os.Getenv("PROXY_...")` or `applyJWTMapOverrides` call is not covered
+4. Document the env var in `docs/CONFIGURATION.md` (in the appropriate "Overrides" table)
+
+When **removing** a config field or env var override:
+1. Remove the override from `applyEnvOverrides` in `internal/config/config.go`
+2. Remove the env var + assertion from `TestEnvVarOverridesComplete`
+3. Remove the entry from `testedEnvVars`/`testedMapPrefixes` in `TestEnvOverridesCoverageGuard`
+4. Remove the env var from `docs/CONFIGURATION.md`
+
 ## Testing
 
 ```bash
-make test          # unit tests only (~92 tests, always verbose)
-make test-all      # unit + integration tests (~105 tests)
+make test          # unit tests only (~150 tests, always verbose)
+make test-all      # unit + integration tests (~190 tests)
 make coverage      # all tests with HTML coverage report
 make lint          # golangci-lint
 ```
@@ -80,7 +128,12 @@ Integration tests in `internal/proxy/integration_test.go` run a full proxy stack
 ## Build and Run
 
 ```bash
-make build         # ./bin/lite-auth-proxy
-make run           # run with config/config.toml + .env
-make docker-build  # build Docker image
+make build-flex    # ./bin/flex-auth-proxy (all plugins)
+make build-lite    # ./bin/lite-auth-proxy (no plugins)
+make build-all     # both binaries
+make run-flex      # run flex-auth-proxy with config/config-flex.toml + .env
+make run-lite      # run lite-auth-proxy with config/config-lite.toml + .env
+make docker-build-flex  # build flex-auth-proxy Docker image
+make docker-build-lite  # build lite-auth-proxy Docker image
+make docker-build-all   # both Docker images
 ```

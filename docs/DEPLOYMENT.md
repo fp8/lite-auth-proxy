@@ -4,6 +4,7 @@ This guide covers building, containerizing, and deploying lite-auth-proxy to pro
 
 ## Table of Contents
 
+- [Build Variants](#build-variants)
 - [Prerequisites](#prerequisites)
 - [Local Docker Build](#local-docker-build)
 - [Google Cloud Build](#google-cloud-build)
@@ -13,6 +14,47 @@ This guide covers building, containerizing, and deploying lite-auth-proxy to pro
 - [Monitoring & Logging](#monitoring--logging)
 - [Security Best Practices](#security-best-practices)
 - [Troubleshooting](#troubleshooting)
+
+## Build Variants
+
+The project ships two build variants:
+
+| Image | Entry Point | Binary | Plugins | Use Case |
+|-------|------------|--------|---------|----------|
+| `flex-auth-proxy:X.Y.Z` | `cmd/flex` | `flex-auth-proxy` | all (ratelimit, admin, apikey, storage-firestore) | Full-featured proxy |
+| `lite-auth-proxy:X.Y.Z` | `cmd/lite` | `lite-auth-proxy` | none | Minimal JWT-only proxy |
+
+The **flex** build includes every plugin and behaves identically to pre-plugin versions. The **lite** build is a minimal JWT-validating reverse proxy with no rate limiting, admin API, API-key auth, or storage — ideal when you only need authentication.
+
+### Building Both Variants
+
+```bash
+# Build both binaries
+make build-all
+
+# Build Docker images for both
+make docker-build-all
+
+# Or individually
+make build-flex      # Flex build → ./bin/flex-auth-proxy
+make build-lite      # Lite build → ./bin/lite-auth-proxy
+make docker-build-flex  # Flex Docker image
+make docker-build-lite  # Lite Docker image
+```
+
+### Custom Builds
+
+You can create a custom build with only the plugins you need. See the [Plugin Guide](PLUGINS.md#creating-a-custom-build) for details.
+
+### Choosing a Variant
+
+| Scenario | Recommended Variant |
+|----------|-------------------|
+| JWT + rate limiting + admin API | Flex |
+| JWT + API-key auth | Flex |
+| Cross-instance rule sync (Firestore) | Flex |
+| JWT auth only, minimal footprint | Lite |
+| No rate limiting needed | Lite |
 
 ## Prerequisites
 
@@ -59,14 +101,23 @@ export DOCKER_REPO_NAME=docker
 # Source environment variables
 source .env
 
-# Build using Make
-make docker-build
+# Build flex image (all plugins)
+make docker-build-flex
+
+# Build lite image (no plugins)
+make docker-build-lite
 
 # Or build manually
 docker build \
-  --build-arg VERSION=1.0.0 \
+  --build-arg VERSION=1.2.0 \
+  -t flex-auth-proxy:local \
+  -f Dockerfile.flex .
+
+# Lite variant
+docker build \
+  --build-arg VERSION=1.2.0 \
   -t lite-auth-proxy:local \
-  -f Dockerfile .
+  -f Dockerfile.lite .
 ```
 
 ### Test Locally
@@ -74,18 +125,18 @@ docker build \
 The container image defaults to `-config /config/config.toml` (set by Dockerfile `CMD`).
 
 ```bash
-# Run container
+# Run flex container (all plugins)
 docker run --rm -p 8888:8888 \
   -e GOOGLE_CLOUD_PROJECT=your-project \
   -e PROXY_SERVER_TARGET_URL=http://host.docker.internal:8080 \
   -e PROXY_AUTH_JWT_ENABLED=true \
   -e LOG_MODE=development \
-  lite-auth-proxy:local
+  flex-auth-proxy:local
 
 # Override config path if needed
 docker run --rm -p 8888:8888 \
   -e PROXY_SERVER_TARGET_URL=http://host.docker.internal:8080 \
-  lite-auth-proxy:local -config /path/to/custom-config.toml
+  flex-auth-proxy:local -config /path/to/custom-config.toml
 
 # Test health check
 curl http://localhost:8888/healthz
@@ -99,10 +150,10 @@ curl -H "Authorization: Bearer <YOUR_JWT>" \
 
 ```bash
 # Check image size (should be < 15MB)
-docker images lite-auth-proxy:local
+docker images flex-auth-proxy:local
 
 # Inspect image layers
-docker history lite-auth-proxy:local
+docker history flex-auth-proxy:local
 ```
 
 ## Google Cloud Build
@@ -127,7 +178,7 @@ gcloud artifacts repositories create docker \
   --repository-format=docker \
   --location=europe-west1 \
   --project=$GOOGLE_CLOUD_PROJECT \
-  --description="Docker images for lite-auth-proxy"
+  --description="Docker images for flex-auth-proxy and lite-auth-proxy"
 ```
 
 #### 3. Configure Docker Authentication
@@ -169,7 +220,7 @@ gcloud builds submit \
 
 The `cloudbuild.yaml` file defines the build process:
 
-1. **Extract version** from `cmd/proxy/main.go`
+1. **Extract version** from `cmd/flex/main.go`
 2. **Run tests** (unit tests only, fast validation)
 3. **Build Docker image** with version tags
 4. **Push to Artifact Registry** with full and major.minor tags
@@ -208,7 +259,7 @@ gcloud artifacts repositories add-iam-policy-binding docker \
 
 ```bash
 gcloud artifacts docker images list \
-  europe-docker.pkg.dev/$GOOGLE_CLOUD_PROJECT/docker/lite-auth-proxy \
+  europe-docker.pkg.dev/$GOOGLE_CLOUD_PROJECT/docker/flex-auth-proxy \
   --project=$GOOGLE_CLOUD_PROJECT
 ```
 
@@ -216,11 +267,11 @@ gcloud artifacts docker images list \
 
 ```bash
 # Tag image
-docker tag lite-auth-proxy:local \
-  europe-docker.pkg.dev/$GOOGLE_CLOUD_PROJECT/docker/lite-auth-proxy:1.0.0
+docker tag flex-auth-proxy:local \
+  europe-docker.pkg.dev/$GOOGLE_CLOUD_PROJECT/docker/flex-auth-proxy:1.0.0
 
 # Push to registry
-docker push europe-docker.pkg.dev/$GOOGLE_CLOUD_PROJECT/docker/lite-auth-proxy:1.0.0
+docker push europe-docker.pkg.dev/$GOOGLE_CLOUD_PROJECT/docker/flex-auth-proxy:1.0.0
 ```
 
 ## Cloud Run Deployment
@@ -228,8 +279,8 @@ docker push europe-docker.pkg.dev/$GOOGLE_CLOUD_PROJECT/docker/lite-auth-proxy:1
 ### Basic Deployment
 
 ```bash
-gcloud run deploy lite-auth-proxy \
-  --image=europe-docker.pkg.dev/$GOOGLE_CLOUD_PROJECT/docker/lite-auth-proxy:1.0.0 \
+gcloud run deploy flex-auth-proxy \
+  --image=europe-docker.pkg.dev/$GOOGLE_CLOUD_PROJECT/docker/flex-auth-proxy:1.0.0 \
   --platform=managed \
   --region=europe-west1 \
   --project=$GOOGLE_CLOUD_PROJECT \
@@ -245,8 +296,8 @@ gcloud run deploy lite-auth-proxy \
 ### Deployment with Environment Variables
 
 ```bash
-gcloud run deploy lite-auth-proxy \
-  --image=europe-docker.pkg.dev/$GOOGLE_CLOUD_PROJECT/docker/lite-auth-proxy:1.0.0 \
+gcloud run deploy flex-auth-proxy \
+  --image=europe-docker.pkg.dev/$GOOGLE_CLOUD_PROJECT/docker/flex-auth-proxy:1.0.0 \
   --platform=managed \
   --region=europe-west1 \
   --project=$GOOGLE_CLOUD_PROJECT \
@@ -269,7 +320,7 @@ echo -n "your-secure-api-key" | \
     --project=$GOOGLE_CLOUD_PROJECT
 
 # Grant access to Cloud Run service account
-SERVICE_SA=$(gcloud run services describe lite-auth-proxy \
+SERVICE_SA=$(gcloud run services describe flex-auth-proxy \
   --platform=managed \
   --region=europe-west1 \
   --project=$GOOGLE_CLOUD_PROJECT \
@@ -281,8 +332,8 @@ gcloud secrets add-iam-policy-binding api-key-secret \
   --project=$GOOGLE_CLOUD_PROJECT
 
 # Deploy with secret
-gcloud run deploy lite-auth-proxy \
-  --image=europe-docker.pkg.dev/$GOOGLE_CLOUD_PROJECT/docker/lite-auth-proxy:1.0.0 \
+gcloud run deploy flex-auth-proxy \
+  --image=europe-docker.pkg.dev/$GOOGLE_CLOUD_PROJECT/docker/flex-auth-proxy:1.0.0 \
   --platform=managed \
   --region=europe-west1 \
   --project=$GOOGLE_CLOUD_PROJECT \
@@ -308,7 +359,7 @@ spec:
         ports:
         - containerPort: 8080
       - name: proxy
-        image: europe-docker.pkg.dev/your-project/docker/lite-auth-proxy:1.0.0
+        image: europe-docker.pkg.dev/your-project/docker/flex-auth-proxy:1.0.0
         ports:
         - containerPort: 8888
         env:
@@ -332,14 +383,14 @@ gcloud run services replace cloud-run-service.yaml \
 
 ```bash
 # Update image version
-gcloud run services update lite-auth-proxy \
-  --image=europe-docker.pkg.dev/$GOOGLE_CLOUD_PROJECT/docker/lite-auth-proxy:1.1.0 \
+gcloud run services update flex-auth-proxy \
+  --image=europe-docker.pkg.dev/$GOOGLE_CLOUD_PROJECT/docker/flex-auth-proxy:1.1.0 \
   --platform=managed \
   --region=europe-west1 \
   --project=$GOOGLE_CLOUD_PROJECT
 
 # Update environment variable
-gcloud run services update lite-auth-proxy \
+gcloud run services update flex-auth-proxy \
   --update-env-vars PROXY_SECURITY_RATE_LIMIT_ENABLED=true \
   --platform=managed \
   --region=europe-west1 \
@@ -386,7 +437,7 @@ API_KEY_SECRET=<from-secret>
 Configure Cloud Run health checks:
 
 ```bash
-gcloud run services update lite-auth-proxy \
+gcloud run services update flex-auth-proxy \
   --http-health-check-path=/healthz \
   --http-health-check-port=8888 \
   --platform=managed \
@@ -402,7 +453,7 @@ Logs are automatically sent to Cloud Logging when `LOG_MODE=production`.
 
 View logs:
 ```bash
-gcloud logging read "resource.type=cloud_run_revision AND resource.labels.service_name=lite-auth-proxy" \
+gcloud logging read "resource.type=cloud_run_revision AND resource.labels.service_name=flex-auth-proxy" \
   --limit=50 \
   --format=json \
   --project=$GOOGLE_CLOUD_PROJECT
@@ -447,14 +498,14 @@ The Dockerfile uses `gcr.io/distroless/static-debian12:nonroot`:
 
 ```bash
 # Restrict ingress to internal only
-gcloud run services update lite-auth-proxy \
+gcloud run services update flex-auth-proxy \
   --ingress=internal \
   --platform=managed \
   --region=europe-west1 \
   --project=$GOOGLE_CLOUD_PROJECT
 
 # Use VPC connector for private backends
-gcloud run services update lite-auth-proxy \
+gcloud run services update flex-auth-proxy \
   --vpc-connector=my-connector \
   --vpc-egress=private-ranges-only \
   --platform=managed \
@@ -476,7 +527,7 @@ Set appropriate resource limits:
 
 **Check logs:**
 ```bash
-gcloud logging read "resource.type=cloud_run_revision AND resource.labels.service_name=lite-auth-proxy" \
+gcloud logging read "resource.type=cloud_run_revision AND resource.labels.service_name=flex-auth-proxy" \
   --limit=20 \
   --project=$GOOGLE_CLOUD_PROJECT
 ```
@@ -490,7 +541,7 @@ gcloud logging read "resource.type=cloud_run_revision AND resource.labels.servic
 
 **Solution:** Adjust JWKS cache settings:
 ```bash
-gcloud run services update lite-auth-proxy \
+gcloud run services update flex-auth-proxy \
   --update-env-vars PROXY_AUTH_JWT_JWKS_CACHE_TTL_MINUTES=60 \
   --platform=managed \
   --region=europe-west1 \
@@ -507,7 +558,7 @@ gcloud run services update lite-auth-proxy \
 **Check:**
 ```bash
 # Test backend from proxy container
-gcloud run services proxy lite-auth-proxy --port=8888
+gcloud run services proxy flex-auth-proxy --port=8888
 curl http://localhost:8888/healthz
 ```
 
@@ -521,7 +572,7 @@ curl https://www.googleapis.com/oauth2/v3/certs
 
 **Check issuer/audience config:**
 ```bash
-gcloud run services describe lite-auth-proxy \
+gcloud run services describe flex-auth-proxy \
   --platform=managed \
   --region=europe-west1 \
   --format="yaml(spec.template.spec.containers[0].env)" \
@@ -533,13 +584,13 @@ gcloud run services describe lite-auth-proxy \
 ```bash
 # List revisions
 gcloud run revisions list \
-  --service=lite-auth-proxy \
+  --service=flex-auth-proxy \
   --platform=managed \
   --region=europe-west1 \
   --project=$GOOGLE_CLOUD_PROJECT
 
 # Rollback to previous revision
-gcloud run services update-traffic lite-auth-proxy \
+gcloud run services update-traffic flex-auth-proxy \
   --to-revisions=REVISION_NAME=100 \
   --platform=managed \
   --region=europe-west1 \
@@ -548,6 +599,7 @@ gcloud run services update-traffic lite-auth-proxy \
 
 ## See Also
 
+- [Plugin Guide](PLUGINS.md) — Build variants, plugin configuration, custom builds
 - [Configuration Guide](CONFIGURATION.md)
 - [Environment Variables Guide](ENVIRONMENT.md)
 - [Development Guide](DEVELOPMENT.md)
