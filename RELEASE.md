@@ -1,5 +1,11 @@
 # lite-auth-proxy
 
+# 1.2.1 [TBD]
+
+## Bug Fixes
+
+* **Fixed path matching for multi-segment URLs** — `include_paths` patterns ending with `/*` (e.g. `["/*"]`) now correctly match paths with multiple segments (e.g. `/api/limit-service/portfolio`) and paths with trailing slashes. Previously, Go's `path.Match` was used directly, which does not allow `*` to cross `/` boundaries, causing JWT authentication headers to be silently omitted for any path deeper than one level.
+
 # 1.2.0 [2026-04-05]
 
 ## Plugin Architecture

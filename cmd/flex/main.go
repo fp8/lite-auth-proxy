@@ -27,7 +27,7 @@ import (
 
 var (
 	// Version is set via ldflags during build
-	Version = "1.2.0"
+	Version = "1.2.1"
 )
 
 const (
