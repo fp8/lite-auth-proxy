@@ -57,12 +57,12 @@ variable "services" {
   }))
   default = {
     "secure-echo-lite" = {
-      docker_repo_url = "europe-docker.pkg.dev/fp8main/docker/lite-auth-proxy"
-      image_tag       = "1.1"
+      docker_repo_url = "farport/lite-auth-proxy"
+      image_tag       = "1.2"
     }
     "secure-echo-flex" = {
-      docker_repo_url = "europe-docker.pkg.dev/fp8main/docker/flex-auth-proxy"
-      image_tag       = "1.1"
+      docker_repo_url = "farport/flex-auth-proxy"
+      image_tag       = "1.2"
     }
   }
 }

@@ -1,11 +1,14 @@
 # -- Build stage --
-FROM golang:1.24-alpine AS builder
+# Debian 13 (trixie) to match the distroless static-debian13 runtime base
+FROM golang:1.24-trixie AS builder
 
 # Build arguments
 ARG VERSION=0.0.1
 
 # Install dependencies
-RUN apk add --no-cache ca-certificates git
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates git \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -16,18 +19,24 @@ RUN go mod download
 # Copy source code
 COPY . .
 
+# Cross-compilation target — populated automatically by BuildKit per platform
+# (e.g. linux/amd64, linux/arm64). Declared WITHOUT defaults: a default value
+# shadows the auto-injected platform value and would mislabel the binary.
+ARG TARGETOS
+ARG TARGETARCH
+
 # Build the flex binary (all plugins)
 # CGO_ENABLED=0: Pure Go binary (no C dependencies)
-# GOOS=linux GOARCH=amd64: Linux x86-64 target
+# GOOS/GOARCH: target OS/arch from buildx (TARGETOS/TARGETARCH)
 # -ldflags: Strip debug info + inject version
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
     -ldflags="-s -w -X main.Version=${VERSION}" \
     -o /flex-auth-proxy ./cmd/flex
 
 # -- Runtime stage --
 # Use distroless base image for minimal attack surface
 # No shell, no package manager, only the binary and required files
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM gcr.io/distroless/static-debian13:nonroot
 
 # Build arguments (re-declared for this stage)
 ARG VERSION=0.0.1

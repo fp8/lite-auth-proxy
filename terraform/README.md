@@ -82,13 +82,13 @@ Each entry in the `services` map accepts an optional `proxy_environment_variable
 ```hcl
 services = {
   "secure-echo-lite" = {
-    docker_repo_url = "europe-docker.pkg.dev/fp8main/docker/lite-auth-proxy"
-    image_tag       = "1.1"
+    docker_repo_url = "farport/lite-auth-proxy"
+    image_tag       = "1.2"
     # uses proxy_default_environment_variables
   }
   "secure-echo-flex" = {
-    docker_repo_url             = "europe-docker.pkg.dev/fp8main/docker/flex-auth-proxy"
-    image_tag                   = "1.1"
+    docker_repo_url             = "farport/flex-auth-proxy"
+    image_tag                   = "1.2"
     proxy_environment_variables = {
       PROXY_AUTH_JWT_ISSUER            = "https://accounts.google.com"
       PROXY_AUTH_JWT_AUDIENCE          = "32555940559.apps.googleusercontent.com"

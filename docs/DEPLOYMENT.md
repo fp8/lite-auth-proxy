@@ -95,16 +95,19 @@ export DOCKER_REPO_NAME=docker
 
 ## Local Docker Build
 
+The default `make docker-build-*` / `docker-push-*` targets build the public
+Docker Hub images (`farport/flex-auth-proxy`, `farport/lite-auth-proxy`) — the
+exact same images the GitHub Actions release workflow publishes (both delegate
+to `scripts/docker-build.sh`). To build or push to a **private Google Artifact
+Registry** instead, use `make -f Makefile.gcp ...` (see [Google Cloud Build](#google-cloud-build)).
+
 ### Build Image
 
 ```bash
-# Source environment variables
-source .env
-
-# Build flex image (all plugins)
+# Build flex image (all plugins) → farport/flex-auth-proxy
 make docker-build-flex
 
-# Build lite image (no plugins)
+# Build lite image (no plugins) → farport/lite-auth-proxy
 make docker-build-lite
 
 # Or build manually
@@ -206,9 +209,9 @@ gcloud builds triggers create github \
 Submit build manually:
 
 ```bash
-# Using Make
+# Using Make (Google Cloud targets live in Makefile.gcp)
 source .env
-make cloud-build
+make -f Makefile.gcp cloud-build
 
 # Or using gcloud directly
 gcloud builds submit \
@@ -263,7 +266,18 @@ gcloud artifacts docker images list \
   --project=$GOOGLE_CLOUD_PROJECT
 ```
 
-### Push Image Manually
+### Push Image to Artifact Registry
+
+```bash
+# Build and push both variants to the Artifact Registry of the given project
+# (tags: full version + major.minor). Uses scripts/docker-build.sh under the hood.
+make -f Makefile.gcp docker-push-all GOOGLE_CLOUD_PROJECT=$GOOGLE_CLOUD_PROJECT
+
+# Or a single variant
+make -f Makefile.gcp docker-push-flex GOOGLE_CLOUD_PROJECT=$GOOGLE_CLOUD_PROJECT
+```
+
+Or fully manually with `docker`:
 
 ```bash
 # Tag image
@@ -482,7 +496,7 @@ Key metrics to monitor:
 
 ### 1. Use Minimal Container Image
 
-The Dockerfile uses `gcr.io/distroless/static-debian12:nonroot`:
+The Dockerfile uses `gcr.io/distroless/static-debian13:nonroot`:
 - No shell or package manager
 - Runs as non-root user
 - Minimal attack surface

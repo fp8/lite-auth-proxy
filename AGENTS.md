@@ -6,7 +6,7 @@ High-performance Go-based reverse proxy with JWT/API-key authentication for serv
 ## TECH_STACK (Runtime)
 **Language**: Go 1.24 (backward compatible to 1.23)
 **Runtime**: Standalone HTTP server (port 8888 default), minimal container (~13MB)
-**Container**: Multi-stage Docker build with distroless base (gcr.io/distroless/static-debian12:nonroot)
+**Container**: Multi-stage Docker build (golang:1.24-trixie builder) with distroless base (gcr.io/distroless/static-debian13:nonroot)
 **Configuration**: TOML format with environment variable substitution/overrides
 **Logging**: Standard library slog (structured JSON/text)
 **External Dependencies**: github.com/BurntSushi/toml v1.6.0 (TOML config parsing only)

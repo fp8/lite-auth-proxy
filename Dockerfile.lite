@@ -1,11 +1,14 @@
 # -- Build stage --
-FROM golang:1.24-alpine AS builder
+# Debian 13 (trixie) to match the distroless static-debian13 runtime base
+FROM golang:1.24-trixie AS builder
 
 # Build arguments
 ARG VERSION=0.0.1
 
 # Install dependencies
-RUN apk add --no-cache ca-certificates git
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates git \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -16,13 +19,19 @@ RUN go mod download
 # Copy source code
 COPY . .
 
+# Cross-compilation target — populated automatically by BuildKit per platform
+# (e.g. linux/amd64, linux/arm64). Declared WITHOUT defaults: a default value
+# shadows the auto-injected platform value and would mislabel the binary.
+ARG TARGETOS
+ARG TARGETARCH
+
 # Build the lite binary (no plugins)
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
     -ldflags="-s -w -X main.Version=${VERSION}" \
     -o /lite-auth-proxy ./cmd/lite
 
 # -- Runtime stage --
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM gcr.io/distroless/static-debian13:nonroot
 
 ARG VERSION=0.0.1
 

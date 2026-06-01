@@ -2,6 +2,14 @@
 
 # 1.2.1 [TBD]
 
+## Build & Packaging
+
+* **Base image updated to `gcr.io/distroless/static-debian13:nonroot`** — both `Dockerfile.flex` and `Dockerfile.lite` now build on the Debian 13 distroless static base (previously Debian 12).
+* **Docker images published to Docker Hub** — a GitHub Actions workflow now builds and pushes `farport/flex-auth-proxy` and `farport/lite-auth-proxy` on every published GitHub Release (with manual dispatch for testing). Images are tagged with the full version and the moving major.minor tag (e.g. `1.2.1` and `1.2`) — no `latest` tag is published. The release tag must match the version in `cmd/flex/main.go` exactly (no `v` prefix).
+* **Debian build stage** — both Dockerfiles now build on `golang:1.24-trixie` (Debian 13) instead of Alpine, matching the runtime base.
+* **Multi-platform images** — published images are now multi-arch manifests covering `linux/amd64` (Intel) and `linux/arm64` (Apple Silicon / ARM Linux); `docker pull` selects the right arch automatically. The Dockerfiles cross-compile using buildx `TARGETOS`/`TARGETARCH`. Local `make docker-build-*` builds the host arch only (a multi-arch manifest can only be pushed to a registry).
+* **Unified image builds** — image build/tagging is now centralized in `scripts/docker-build.sh`, shared by the Makefile and the release workflow so local and CI builds are identical. The default `make docker-build-*`/`docker-push-*` targets target Docker Hub (`farport/*`); building/pushing to a private Google Artifact Registry moved to a separate `Makefile.gcp` (`make -f Makefile.gcp ...`).
+
 ## Bug Fixes
 
 * **Fixed path matching for multi-segment URLs** — `include_paths` patterns ending with `/*` (e.g. `["/*"]`) now correctly match paths with multiple segments (e.g. `/api/limit-service/portfolio`) and paths with trailing slashes. Previously, Go's `path.Match` was used directly, which does not allow `*` to cross `/` boundaries, causing JWT authentication headers to be silently omitted for any path deeper than one level.

@@ -43,6 +43,21 @@ make build-flex   # Flex build → ./bin/flex-auth-proxy (all plugins)
 make build-lite   # Lite build → ./bin/lite-auth-proxy (JWT-only, no plugins)
 ```
 
+### Run with Docker
+
+Prebuilt images are published to Docker Hub:
+
+```bash
+# Flex build (all plugins) — pin to the full version, or the major.minor tag
+docker pull farport/flex-auth-proxy:1.2.1
+
+# Lite build (JWT-only, no plugins)
+docker pull farport/lite-auth-proxy:1.2
+```
+
+Images are multi-arch (`linux/amd64` and `linux/arm64`) and tagged with the full version (`1.2.1`) and the moving major.minor tag (`1.2`) only — there is no `latest` tag.
+See the [Deployment Guide](docs/DEPLOYMENT.md) for Cloud Run, sidecar, and configuration details.
+
 ### Basic Usage
 
 ```bash

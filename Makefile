@@ -1,7 +1,6 @@
 .PHONY: build-flex build-lite build-all run-flex run-lite test test-all coverage lint clean help tidy \
 	docker-build-flex docker-build-lite docker-build-all \
-	docker-run-flex docker-push-flex docker-push-lite docker-push-all \
-	cloud-build
+	docker-run-flex docker-push-flex docker-push-lite docker-push-all
 
 # Default target
 .DEFAULT_GOAL := help
@@ -9,21 +8,20 @@
 # Variables
 GO_VERSION?=$(shell grep 'Version = ' cmd/flex/main.go | head -1 | sed 's/.*"\(.*\)".*/\1/')
 VERSION=dev
-MAJOR_MINOR=$(shell echo $(VERSION) | cut -d. -f1,2)
 FLEX_BINARY=flex-auth-proxy
 LITE_BINARY=lite-auth-proxy
 BUILD_DIR=bin
 GO=go
 GOFLAGS=-v
 LDFLAGS=-ldflags "-s -w -X main.Version=$(VERSION)"
-DOCKER_REGISTRY?=europe-docker.pkg.dev
-DOCKER_PROJECT_ID?=$(shell echo $$GOOGLE_CLOUD_PROJECT)
-DOCKER_REPO_NAME?=docker
-DOCKER_REPO=$(DOCKER_REGISTRY)/$(DOCKER_PROJECT_ID)/$(DOCKER_REPO_NAME)
-FLEX_IMAGE=$(DOCKER_REPO)/flex-auth-proxy
-LITE_IMAGE=$(DOCKER_REPO)/lite-auth-proxy
-IMAGE_TAG=$(VERSION)
-GOOGLE_CLOUD_PROJECT?=$(shell echo $$GOOGLE_CLOUD_PROJECT)
+# Docker images are published to Docker Hub under the farport/ namespace —
+# the exact same images the GitHub Actions release workflow builds (both call
+# scripts/docker-build.sh). To target a private Google Artifact Registry
+# instead, use: make -f Makefile.gcp ...
+DOCKER_NAMESPACE?=farport
+FLEX_IMAGE=$(DOCKER_NAMESPACE)/flex-auth-proxy
+LITE_IMAGE=$(DOCKER_NAMESPACE)/lite-auth-proxy
+IMAGE_TAG?=$(GO_VERSION)
 DOCKER_TARGET_URL?=http://localhost:8080
 
 # Build the flex application (all plugins)
@@ -107,52 +105,29 @@ help:
 	@echo "  tidy              - Tidy go modules"
 	@echo "  clean             - Remove build artifacts and coverage files"
 	@echo ""
-	@echo "Docker targets (version: $(VERSION), tags: $(VERSION) and $(MAJOR_MINOR)):"
-	@echo "  docker-build-flex - Build flex-auth-proxy Docker image (requires GOOGLE_CLOUD_PROJECT)"
-	@echo "  docker-build-lite - Build lite-auth-proxy Docker image"
+	@echo "Docker targets (Docker Hub: $(DOCKER_NAMESPACE)/*, version from cmd/flex/main.go: $(GO_VERSION)):"
+	@echo "  docker-build-flex - Build flex-auth-proxy image ($(FLEX_IMAGE))"
+	@echo "  docker-build-lite - Build lite-auth-proxy image ($(LITE_IMAGE))"
 	@echo "  docker-build-all  - Build both flex and lite Docker images"
-	@echo "  docker-run-flex   - Run flex-auth-proxy + echo via Docker Compose"
-	@echo "  docker-push-flex  - Push flex-auth-proxy image to GCP Artifact Registry"
-	@echo "  docker-push-lite  - Push lite-auth-proxy image to GCP Artifact Registry"
-	@echo "  docker-push-all   - Push both images to GCP Artifact Registry"
+	@echo "  docker-run-flex   - Build + run flex-auth-proxy + echo via Docker Compose"
+	@echo "  docker-push-flex  - Build and push flex-auth-proxy image to Docker Hub"
+	@echo "  docker-push-lite  - Build and push lite-auth-proxy image to Docker Hub"
+	@echo "  docker-push-all   - Build and push both images to Docker Hub"
 	@echo ""
-	@echo "Cloud Build targets:"
-	@echo "  cloud-build       - Submit build to Google Cloud Build (requires GOOGLE_CLOUD_PROJECT and gcloud CLI)"
-	@echo ""
-	@echo "Note: Set GOOGLE_CLOUD_PROJECT environment variable or copy .env.example to .env and source it"
+	@echo "To build/push to a private Google Artifact Registry instead:"
+	@echo "  make -f Makefile.gcp help"
 
-# Docker targets
+# Docker targets — delegate to scripts/docker-build.sh so the Makefile and the
+# GitHub Actions release workflow build identical images (Docker Hub farport/*).
 docker-build-flex:
-	@if [ -z "$(DOCKER_PROJECT_ID)" ]; then \
-		echo "Error: DOCKER_PROJECT_ID or GOOGLE_CLOUD_PROJECT environment variable must be set"; \
-		exit 1; \
-	fi
-	@echo "Building Docker image: $(FLEX_IMAGE):$(VERSION)"
-	docker build \
-		--build-arg VERSION=$(GO_VERSION) \
-		-t $(FLEX_IMAGE):$(VERSION) \
-		-f Dockerfile.flex .
-	@echo "Docker image built: $(FLEX_IMAGE):$(VERSION)"
+	IMAGE=$(FLEX_IMAGE) ./scripts/docker-build.sh flex
 
 docker-build-lite:
-	@if [ -z "$(DOCKER_PROJECT_ID)" ]; then \
-		echo "Error: DOCKER_PROJECT_ID or GOOGLE_CLOUD_PROJECT environment variable must be set"; \
-		exit 1; \
-	fi
-	@echo "Building Docker image (lite): $(LITE_IMAGE):$(VERSION)"
-	docker build \
-		--build-arg VERSION=$(GO_VERSION) \
-		-t $(LITE_IMAGE):$(VERSION) \
-		-f Dockerfile.lite .
-	@echo "Docker image built: $(LITE_IMAGE):$(VERSION)"
+	IMAGE=$(LITE_IMAGE) ./scripts/docker-build.sh lite
 
 docker-build-all: docker-build-flex docker-build-lite
 
-docker-run-flex:
-	@if [ -z "$(GOOGLE_CLOUD_PROJECT)" ]; then \
-		echo "Error: GOOGLE_CLOUD_PROJECT environment variable must be set"; \
-		exit 1; \
-	fi
+docker-run-flex: docker-build-flex
 	@echo "Running flex-auth-proxy + echo in Docker Compose..."
 	GOOGLE_CLOUD_PROJECT=fp8devel \
 	IMAGE_NAME=$(FLEX_IMAGE) \
@@ -161,43 +136,9 @@ docker-run-flex:
 	docker compose up --remove-orphans
 
 docker-push-flex:
-	@if [ -z "$(DOCKER_PROJECT_ID)" ]; then \
-		echo "Error: GOOGLE_CLOUD_PROJECT environment variable must be set"; \
-		exit 1; \
-	fi
-	@echo "Pushing flex-auth-proxy images to GCP Artifact Registry..."
-	docker push $(FLEX_IMAGE):$(VERSION)
-	docker push $(FLEX_IMAGE):$(MAJOR_MINOR)
-	@echo "Docker images pushed:"
-	@echo "  - $(FLEX_IMAGE):$(VERSION)"
-	@echo "  - $(FLEX_IMAGE):$(MAJOR_MINOR)"
+	IMAGE=$(FLEX_IMAGE) PUSH=true ./scripts/docker-build.sh flex
 
 docker-push-lite:
-	@if [ -z "$(DOCKER_PROJECT_ID)" ]; then \
-		echo "Error: GOOGLE_CLOUD_PROJECT environment variable must be set"; \
-		exit 1; \
-	fi
-	@echo "Pushing lite-auth-proxy images to GCP Artifact Registry..."
-	docker push $(LITE_IMAGE):$(VERSION)
-	docker push $(LITE_IMAGE):$(MAJOR_MINOR)
-	@echo "Docker images pushed:"
-	@echo "  - $(LITE_IMAGE):$(VERSION)"
-	@echo "  - $(LITE_IMAGE):$(MAJOR_MINOR)"
+	IMAGE=$(LITE_IMAGE) PUSH=true ./scripts/docker-build.sh lite
 
 docker-push-all: docker-push-flex docker-push-lite
-
-# Cloud Build target
-cloud-build:
-	@if ! command -v gcloud &> /dev/null; then \
-		echo "Error: gcloud CLI not found. Install it from https://cloud.google.com/sdk/docs/install"; \
-		exit 1; \
-	fi
-	@ACTIVE_PROJECT=$$(gcloud config get-value project 2>/dev/null); \
-	if [ "$$ACTIVE_PROJECT" != "fp8main" ]; then \
-		echo "Error: active gcloud project must be 'fp8main' (currently '$$ACTIVE_PROJECT')"; \
-		echo "Run: gcloud config set project fp8main"; \
-		exit 1; \
-	fi
-	@echo "Submitting build to Google Cloud Build..."
-	gcloud builds submit --config cloudbuild.yaml --project=fp8main
-	@echo "Build submitted to Cloud Build. View progress in GCP Console."

@@ -14,15 +14,17 @@ startup_cpu_boost = true
 
 # Services to deploy. Each key becomes the Cloud Run service name.
 # docker_repo_url points to the container image; image_tag is the version.
+# Defaults to the public Docker Hub images (farport/*); point at a private
+# Artifact Registry (e.g. europe-docker.pkg.dev/PROJECT/docker/...) to use your own.
 # Optional: proxy_environment_variables overrides proxy_default_environment_variables per service.
 services = {
   "secure-echo-lite" = {
-    docker_repo_url = "europe-docker.pkg.dev/fp8main/docker/lite-auth-proxy"
-    image_tag       = "1.1"
+    docker_repo_url = "farport/lite-auth-proxy"
+    image_tag       = "1.2"
   }
   "secure-echo-flex" = {
-    docker_repo_url = "europe-docker.pkg.dev/fp8main/docker/flex-auth-proxy"
-    image_tag       = "1.1"
+    docker_repo_url = "farport/flex-auth-proxy"
+    image_tag       = "1.2"
   }
 }
 
