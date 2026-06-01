@@ -20,6 +20,7 @@ import (
 	// Register the grpctranscode plugin.
 	_ "github.com/fp8/lite-auth-proxy/internal/plugins/grpctranscode"
 
+	"google.golang.org/genproto/googleapis/api/annotations"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/health"
@@ -107,6 +108,11 @@ func testFileDescriptor() *descriptorpb.FileDescriptorProto {
 						Name:       proto.String("SayHello"),
 						InputType:  proto.String(".test.v1.HelloRequest"),
 						OutputType: proto.String(".test.v1.HelloReply"),
+						// Carry a google.api.http annotation so annotation-mode
+						// route discovery (over reflection) can be exercised. The
+						// option survives into the reflected descriptor as the
+						// MethodOptions extension field 72295728.
+						Options: sayHelloHTTPOptions(),
 					},
 					{
 						Name:       proto.String("Echo"),
@@ -117,6 +123,18 @@ func testFileDescriptor() *descriptorpb.FileDescriptorProto {
 			},
 		},
 	}
+}
+
+// sayHelloHTTPOptions builds the MethodOptions carrying a google.api.http binding
+// (POST /v1/greeter/hello, body "*") for the SayHello method, used by the
+// annotation-mode test.
+func sayHelloHTTPOptions() *descriptorpb.MethodOptions {
+	o := &descriptorpb.MethodOptions{}
+	proto.SetExtension(o, annotations.E_Http, &annotations.HttpRule{
+		Pattern: &annotations.HttpRule_Post{Post: "/v1/greeter/hello"},
+		Body:    "*",
+	})
+	return o
 }
 
 // resolvedFiles returns a resolved file registry from the test file descriptor.
@@ -374,6 +392,55 @@ func TestGRPCTranscodeConventionMode(t *testing.T) {
 	resp4, _ := doPost(t, proxyServer.URL+"/test.v1.Greeter/SayHello", `{"name": "invalid"}`)
 	if resp4.StatusCode != http.StatusBadRequest {
 		t.Fatalf("expected 400 for INVALID_ARGUMENT, got %d", resp4.StatusCode)
+	}
+}
+
+// TestGRPCTranscodeAnnotationMode exercises route discovery from google.api.http
+// annotations carried in the reflected descriptors (RouteMode "annotation"). This
+// is the path that was previously untested: the annotation extension is resolved as
+// a *known* extension in this binary's global registry, so it must be read from the
+// marshaled option bytes rather than from MethodOptions.GetUnknown().
+func TestGRPCTranscodeAnnotationMode(t *testing.T) {
+	addr, stop := startTestGRPCServer(t, false, false)
+	defer stop()
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{
+			Port:        0,
+			TargetURL:   "http://" + addr,
+			HealthCheck: config.HealthCheck{Path: "/healthz"},
+		},
+		GRPC: config.GRPCConfig{
+			Enabled:            true,
+			RouteMode:          "annotation",
+			Reflection:         true,
+			RequestTimeoutSecs: 5,
+			Backends:           []config.GRPCBackend{{Address: addr}},
+		},
+		Auth: config.AuthConfig{HeaderPrefix: "X-AUTH-"},
+	}
+
+	handler, err := proxy.NewHandler(cfg, slog.Default())
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+	proxyServer := httptest.NewServer(handler)
+	defer proxyServer.Close()
+	waitReady(t, proxyServer.URL)
+
+	// The annotated REST path transcodes to test.v1.Greeter/SayHello.
+	resp, body := doPost(t, proxyServer.URL+"/v1/greeter/hello", `{"name": "world"}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 from annotated path, got %d: %s", resp.StatusCode, body)
+	}
+	if !strings.Contains(body, "Hello, world") {
+		t.Errorf("expected greeting response, got: %s", body)
+	}
+
+	// The convention path is NOT registered in pure annotation mode.
+	resp2, _ := doPost(t, proxyServer.URL+"/test.v1.Greeter/SayHello", `{"name": "world"}`)
+	if resp2.StatusCode != http.StatusNotFound {
+		t.Errorf("expected 404 for convention path in annotation mode, got %d", resp2.StatusCode)
 	}
 }
 

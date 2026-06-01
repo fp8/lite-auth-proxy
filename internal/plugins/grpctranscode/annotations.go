@@ -3,7 +3,6 @@ package grpctranscode
 import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
-	"google.golang.org/protobuf/types/descriptorpb"
 )
 
 // httpBinding represents a parsed google.api.http annotation.
@@ -30,8 +29,16 @@ func parseHTTPAnnotation(md protoreflect.MethodDescriptor) *httpBinding {
 		return extractHTTPRule(httpMsg)
 	}
 
-	// Fall back to parsing from the wire-format unknown fields.
-	// Marshal opts back to bytes and look for the extension manually.
+	// Fall back to scanning the wire-format bytes of the options directly.
+	//
+	// We must NOT re-parse into a fresh descriptorpb.MethodOptions and read only
+	// GetUnknown(): when the google.api.http extension (field 72295728) is
+	// registered in this binary's global proto registry — which it is whenever
+	// any linked package imports the genproto annotations — proto.Unmarshal
+	// resolves it as a *known* extension, so GetUnknown() comes back empty and the
+	// binding is silently lost (this is exactly what happens for descriptors
+	// rebuilt from server reflection). Instead, scan the marshaled options bytes,
+	// which contain field 72295728 whether the extension is known or unknown.
 	protoMsg, ok := opts.(proto.Message)
 	if !ok {
 		return nil
@@ -40,17 +47,7 @@ func parseHTTPAnnotation(md protoreflect.MethodDescriptor) *httpBinding {
 	if err != nil || len(b) == 0 {
 		return nil
 	}
-
-	// Re-parse into MethodOptions to access unknown fields.
-	mopts := &descriptorpb.MethodOptions{}
-	if err := proto.Unmarshal(b, mopts); err != nil {
-		return nil
-	}
-	unknownBytes := mopts.ProtoReflect().GetUnknown()
-	if len(unknownBytes) == 0 {
-		return nil
-	}
-	return parseHTTPRuleFromUnknown(unknownBytes)
+	return parseHTTPRuleFromUnknown(b)
 }
 
 // parseHTTPRuleFromUnknown is a minimal wire-format parser for the HttpRule extension.
