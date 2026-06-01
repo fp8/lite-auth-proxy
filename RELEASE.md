@@ -1,6 +1,10 @@
 # lite-auth-proxy
 
-# 1.2.1 [TBD]
+# 1.2.1 [2026-06-01]
+
+## Testing
+
+* **End-to-end test suite (`e2e/`)** — a black-box suite that runs the actual Docker image (or a deployed service) and drives it over HTTP. Scenarios are written in plain-English Gherkin (Cucumber-style) and run with Python + behave, bootstrapped via `uv`. Covers health, JWT auth (using a real Firebase login for the `fp8devel` test user), API-key auth, the locked-down admin control plane, and rate limiting. Works against both the flex and lite images and against remote deployments; scenarios self-skip when prerequisites aren't met. Run with `make e2e-flex`, `make e2e-lite`, or `make e2e-remote URL=...`.
 
 ## Build & Packaging
 

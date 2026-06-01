@@ -1,0 +1,13 @@
+[project]
+name = "lite-auth-proxy-e2e"
+version = "0.1.0"
+description = "End-to-end (Gherkin/behave) tests for the lite-auth-proxy Docker images"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "behave>=1.2.6",
+    "requests>=2.31",
+]
+
+# This is an isolated test project; it is NOT part of the Go module and has no
+# bearing on the proxy build. `uv` manages a local .venv inside this directory.

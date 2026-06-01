@@ -1,6 +1,7 @@
 .PHONY: build-flex build-lite build-all run-flex run-lite test test-all coverage lint clean help tidy \
 	docker-build-flex docker-build-lite docker-build-all \
-	docker-run-flex docker-push-flex docker-push-lite docker-push-all
+	docker-run-flex docker-push-flex docker-push-lite docker-push-all \
+	e2e-flex e2e-lite e2e-remote
 
 # Default target
 .DEFAULT_GOAL := help
@@ -71,6 +72,17 @@ coverage:
 	@$(GO) tool cover -html=coverage.out -o coverage.html
 	@echo "Coverage report generated: coverage.html"
 
+# End-to-end tests (Gherkin/behave) against the Docker image or a deployment.
+# See e2e/README.md. Requires Docker and uv.
+e2e-flex:
+	@./e2e/run.sh local flex
+e2e-lite:
+	@./e2e/run.sh local lite
+# Usage: make e2e-remote URL=https://your-proxy-url
+e2e-remote:
+	@test -n "$(URL)" || (echo "Set URL=... e.g. make e2e-remote URL=https://host" && exit 2)
+	@./e2e/run.sh remote "$(URL)"
+
 # Run linter (requires golangci-lint)
 lint:
 	@echo "Running golangci-lint..."
@@ -100,6 +112,9 @@ help:
 	@echo "  run-lite          - Build and run lite-auth-proxy"
 	@echo "  test              - Run unit tests only"
 	@echo "  test-all          - Run all tests including integration"
+	@echo "  e2e-flex          - Run Gherkin e2e tests against the flex Docker image (build it first)"
+	@echo "  e2e-lite          - Run Gherkin e2e tests against the lite Docker image (build it first)"
+	@echo "  e2e-remote URL=.. - Run Gherkin e2e tests against a deployed service"
 	@echo "  coverage          - Run all tests and generate HTML coverage report"
 	@echo "  lint              - Run golangci-lint"
 	@echo "  tidy              - Tidy go modules"

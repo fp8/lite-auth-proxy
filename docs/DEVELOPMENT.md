@@ -194,6 +194,24 @@ make test-all
 # Runs approximately 190 total tests
 ```
 
+#### End-to-End Tests (Docker image / deployed service)
+
+In addition to the Go tests, [`e2e/`](../e2e/README.md) contains a black-box
+suite that runs the actual Docker image (or a deployed service) and exercises it
+over HTTP. The scenarios are written in plain-English Gherkin (Cucumber-style)
+so non-developers can read and extend them; the runner is Python + behave,
+bootstrapped automatically with `uv`.
+
+```bash
+# Build the image once, then test it (the e2e targets reuse the local image):
+make docker-build-flex && make e2e-flex
+make docker-build-lite && make e2e-lite
+make e2e-remote URL=https://host    # test a deployed service (no image needed)
+```
+
+JWT scenarios sign in as a real Firebase test user (`fp8devel` project); see
+[`e2e/README.md`](../e2e/README.md) for details and per-scenario coverage.
+
 #### Specific Package Tests
 
 ```bash
