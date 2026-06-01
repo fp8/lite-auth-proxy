@@ -1,5 +1,53 @@
 # lite-auth-proxy
 
+# 1.2.1 [2026-06-01]
+
+## Testing
+
+* **End-to-end test suite (`e2e/`)** — a black-box suite that runs the actual Docker image (or a deployed service) and drives it over HTTP. Scenarios are written in plain-English Gherkin (Cucumber-style) and run with Python + behave, bootstrapped via `uv`. Covers health, JWT auth (using a real Firebase login for the `fp8devel` test user), API-key auth, the locked-down admin control plane, and rate limiting. Works against both the flex and lite images and against remote deployments; scenarios self-skip when prerequisites aren't met. Run with `make e2e-flex`, `make e2e-lite`, or `make e2e-remote URL=...`.
+
+## Build & Packaging
+
+* **Base image updated to `gcr.io/distroless/static-debian13:nonroot`** — both `Dockerfile.flex` and `Dockerfile.lite` now build on the Debian 13 distroless static base (previously Debian 12).
+* **Docker images published to Docker Hub** — a GitHub Actions workflow now builds and pushes `farport/flex-auth-proxy` and `farport/lite-auth-proxy` on every published GitHub Release (with manual dispatch for testing). Images are tagged with the full version and the moving major.minor tag (e.g. `1.2.1` and `1.2`) — no `latest` tag is published. The release tag must match the version in `cmd/flex/main.go` exactly (no `v` prefix).
+* **Debian build stage** — both Dockerfiles now build on `golang:1.24-trixie` (Debian 13) instead of Alpine, matching the runtime base.
+* **Multi-platform images** — published images are now multi-arch manifests covering `linux/amd64` (Intel) and `linux/arm64` (Apple Silicon / ARM Linux); `docker pull` selects the right arch automatically. The Dockerfiles cross-compile using buildx `TARGETOS`/`TARGETARCH`. Local `make docker-build-*` builds the host arch only (a multi-arch manifest can only be pushed to a registry).
+* **Unified image builds** — image build/tagging is now centralized in `scripts/docker-build.sh`, shared by the Makefile and the release workflow so local and CI builds are identical. The default `make docker-build-*`/`docker-push-*` targets target Docker Hub (`farport/*`); building/pushing to a private Google Artifact Registry moved to a separate `Makefile.gcp` (`make -f Makefile.gcp ...`).
+
+## Bug Fixes
+
+* **Fixed path matching for multi-segment URLs** — `include_paths` patterns ending with `/*` (e.g. `["/*"]`) now correctly match paths with multiple segments (e.g. `/api/limit-service/portfolio`) and paths with trailing slashes. Previously, Go's `path.Match` was used directly, which does not allow `*` to cross `/` boundaries, causing JWT authentication headers to be silently omitted for any path deeper than one level.
+
+# 1.2.0 [2026-04-05]
+
+## Plugin Architecture
+
+* **Compile-time plugin system** — features are now modular plugins registered via Go `init()` + blank imports (Caddy/CoreDNS pattern). The core proxy is a minimal JWT-validating reverse proxy; rate limiting, admin API, API-key auth, and storage are all optional plugins.
+* **Two build variants**: `flex-auth-proxy` (all plugins, full-featured) and `lite-auth-proxy` (no plugins, minimal JWT proxy). Both share the same core and produce separate Docker images.
+* **Config validation at startup** — if a config section references a plugin that is not compiled in (e.g. `security.rate_limit.enabled = true` in the lite build), the proxy fails with a clear error message naming the missing plugin and the import path to add.
+
+## Storage Plugin (Firestore)
+
+* **Persistent rule storage via Firestore** — the new `storage-firestore` plugin provides `RuleStore` and `KeyValueStore` implementations backed by Google Cloud Firestore. Admin rules survive process restarts and are synchronized across Cloud Run instances in real-time via Firestore snapshot listeners.
+* **Zero-latency hot path** — `ShouldAllow()` reads from an in-memory cache only; Firestore is used for persistence and cross-instance sync, not for per-request lookups.
+* **Config**: `[storage]` section with `backend`, `project_id`, and `collection_prefix` fields. Environment variable overrides: `PROXY_STORAGE_BACKEND`, `PROXY_STORAGE_PROJECT_ID`, `PROXY_STORAGE_COLLECTION_PREFIX`.
+
+## Core Refactoring
+
+* **`internal/store` package** — extracted `Rule`, `RuleStatus`, `RuleStore` interface, `MemoryRuleStore`, `KeyValueStore` interface, and `MemoryKeyValueStore` from the admin package into a standalone core package. The admin package now uses type aliases for backwards compatibility.
+* **`internal/plugin` package** — plugin registry with `Register`, `Get`, `All`, `OfType[T]`, `StorageBackend`, and `Reset` (test-only). Plugin interfaces: `Plugin`, `MiddlewareProvider`, `RouteProvider`, `AuthProvider`, `StorageBackendProvider`, `ConfigValidator`, `Starter`, `Stopper`.
+* **7-phase plugin assembly** in `proxy.NewHandlerWithDeps`: default stores → storage backend → config validation → routes → auth providers → middleware → lifecycle.
+* **Dual-path pipeline** — when plugins are registered the plugin pipeline is used; otherwise the legacy direct construction runs unchanged. All 131+ existing tests pass via the legacy path without modification.
+
+## Build & Packaging
+
+* **`Dockerfile.flex`** — builds `flex-auth-proxy` from `cmd/flex` (all plugins).
+* **`Dockerfile.lite`** — builds `lite-auth-proxy` from `cmd/lite` (no plugins).
+* **`config/config-flex.toml`** / **`config/config-lite.toml`** — default configs for each build.
+* **Makefile targets**: `build-flex`, `build-lite`, `build-all`, `docker-build-flex`, `docker-build-lite`, `docker-build-all`.
+* **Cloud Build** now builds and pushes both `flex-auth-proxy` and `lite-auth-proxy` images.
+* **Startup log** now includes `build` field: `"lite"`, `"flex"`, or `"custom"`.
+
 # 1.1.2 [2026-04-05]
 
 ## Rate Limiting

@@ -1,0 +1,85 @@
+# Makefile.gcp — build & push proxy images to a private Google Artifact
+# Registry, and submit Cloud Build jobs. Use this when you want the images in a
+# specific Google Cloud project rather than the public Docker Hub farport/*
+# images that the default Makefile and GitHub Actions produce.
+#
+# Usage:
+#   make -f Makefile.gcp docker-push-all GOOGLE_CLOUD_PROJECT=my-project
+#   make -f Makefile.gcp cloud-build
+#
+# Image build/tagging is delegated to scripts/docker-build.sh — the same script
+# the default Makefile and the release workflow use — so only the target
+# registry differs.
+
+.PHONY: docker-build-flex docker-build-lite docker-build-all \
+	docker-push-flex docker-push-lite docker-push-all \
+	cloud-build help
+
+.DEFAULT_GOAL := help
+
+# Version source of truth (read from cmd/flex/main.go)
+GO_VERSION?=$(shell grep 'Version = ' cmd/flex/main.go | head -1 | sed 's/.*"\(.*\)".*/\1/')
+
+# Google Artifact Registry coordinates.
+# GOOGLE_CLOUD_PROJECT is auto-imported from the environment by make, and can
+# also be overridden on the command line: make -f Makefile.gcp <t> GOOGLE_CLOUD_PROJECT=x
+DOCKER_REGISTRY?=europe-docker.pkg.dev
+GOOGLE_CLOUD_PROJECT?=
+DOCKER_PROJECT_ID?=$(GOOGLE_CLOUD_PROJECT)
+DOCKER_REPO_NAME?=docker
+DOCKER_REPO=$(DOCKER_REGISTRY)/$(DOCKER_PROJECT_ID)/$(DOCKER_REPO_NAME)
+FLEX_IMAGE=$(DOCKER_REPO)/flex-auth-proxy
+LITE_IMAGE=$(DOCKER_REPO)/lite-auth-proxy
+
+# Cloud Build project (kept explicit to avoid pushing to the wrong project)
+CLOUD_BUILD_PROJECT?=fp8main
+
+guard-project:
+	@if [ -z "$(DOCKER_PROJECT_ID)" ]; then \
+		echo "Error: set DOCKER_PROJECT_ID or GOOGLE_CLOUD_PROJECT (e.g. make -f Makefile.gcp <target> GOOGLE_CLOUD_PROJECT=my-project)"; \
+		exit 1; \
+	fi
+
+docker-build-flex: guard-project
+	IMAGE=$(FLEX_IMAGE) ./scripts/docker-build.sh flex
+
+docker-build-lite: guard-project
+	IMAGE=$(LITE_IMAGE) ./scripts/docker-build.sh lite
+
+docker-build-all: docker-build-flex docker-build-lite
+
+docker-push-flex: guard-project
+	IMAGE=$(FLEX_IMAGE) PUSH=true ./scripts/docker-build.sh flex
+
+docker-push-lite: guard-project
+	IMAGE=$(LITE_IMAGE) PUSH=true ./scripts/docker-build.sh lite
+
+docker-push-all: docker-push-flex docker-push-lite
+
+cloud-build:
+	@if ! command -v gcloud > /dev/null 2>&1; then \
+		echo "Error: gcloud CLI not found. Install it from https://cloud.google.com/sdk/docs/install"; \
+		exit 1; \
+	fi
+	@ACTIVE_PROJECT=$$(gcloud config get-value project 2>/dev/null); \
+	if [ "$$ACTIVE_PROJECT" != "$(CLOUD_BUILD_PROJECT)" ]; then \
+		echo "Error: active gcloud project must be '$(CLOUD_BUILD_PROJECT)' (currently '$$ACTIVE_PROJECT')"; \
+		echo "Run: gcloud config set project $(CLOUD_BUILD_PROJECT)"; \
+		exit 1; \
+	fi
+	@echo "Submitting build to Google Cloud Build..."
+	gcloud builds submit --config cloudbuild.yaml --project=$(CLOUD_BUILD_PROJECT)
+	@echo "Build submitted to Cloud Build. View progress in GCP Console."
+
+help:
+	@echo "Google Cloud build targets (registry: $(DOCKER_REGISTRY), project: $(DOCKER_PROJECT_ID), version: $(GO_VERSION)):"
+	@echo "  docker-build-flex - Build flex-auth-proxy image into $(DOCKER_REPO)"
+	@echo "  docker-build-lite - Build lite-auth-proxy image into $(DOCKER_REPO)"
+	@echo "  docker-build-all  - Build both images"
+	@echo "  docker-push-flex  - Build and push flex-auth-proxy to Artifact Registry"
+	@echo "  docker-push-lite  - Build and push lite-auth-proxy to Artifact Registry"
+	@echo "  docker-push-all   - Build and push both images"
+	@echo "  cloud-build       - Submit build to Google Cloud Build (project: $(CLOUD_BUILD_PROJECT))"
+	@echo ""
+	@echo "Set GOOGLE_CLOUD_PROJECT (or DOCKER_PROJECT_ID) to choose the target project."
+	@echo "Override DOCKER_REGISTRY / DOCKER_REPO_NAME for a different Artifact Registry location."

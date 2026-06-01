@@ -1,35 +1,24 @@
-# .gcloudignore - Exclude files not needed by Cloud Build
+# .gcloudignore - Allowlist approach: exclude everything, include only what Cloud Build needs
 #
-# This file specifies files that should not be uploaded to Google Cloud
-# when running `gcloud builds submit` or when Cloud Build triggers run.
+# Cloud Build needs: go.mod, go.sum, cmd/, internal/, config/, Dockerfile.*, cloudbuild.yaml
 #
 # See: https://cloud.google.com/sdk/gcloud/reference/topic/gcloudignore
 
-# Include all patterns from .gitignore
-#!include:.gitignore
+# Exclude everything
+*
 
-# Additional exclusions specific to Cloud Build
-# (These files may be tracked in git but aren't needed for the build)
+# Include Go source and modules
+!go.mod
+!go.sum
+!cmd/
+!internal/
 
-# Git metadata
-.git/
-.gitignore
-.gitattributes
+# Include Docker build files
+!Dockerfile.flex
+!Dockerfile.lite
 
-# Documentation (not needed for Docker build)
-docs/
-*.md
-!deployments/*.md
+# Include default config (copied into Docker image)
+!config/
 
-# Makefile (Cloud Build uses cloudbuild.yaml directly)
-Makefile
-
-# Test artifacts
-testdata/
-
-# CI/CD configs for other platforms
-.github/
-.gitlab-ci.yml
-.travis.yml
-azure-pipelines.yml
-Jenkinsfile
+# Include Cloud Build config
+!cloudbuild.yaml

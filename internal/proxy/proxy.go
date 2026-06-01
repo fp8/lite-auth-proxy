@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,7 +17,9 @@ import (
 	"github.com/fp8/lite-auth-proxy/internal/auth/apikey"
 	"github.com/fp8/lite-auth-proxy/internal/auth/jwt"
 	"github.com/fp8/lite-auth-proxy/internal/config"
+	"github.com/fp8/lite-auth-proxy/internal/plugin"
 	"github.com/fp8/lite-auth-proxy/internal/ratelimit"
+	"github.com/fp8/lite-auth-proxy/internal/store"
 )
 
 type errorResponse struct {
@@ -26,17 +29,18 @@ type errorResponse struct {
 }
 
 type handler struct {
-	cfg          *config.Config
-	logger       *slog.Logger
-	proxy        *httputil.ReverseProxy
-	healthProxy  *httputil.ReverseProxy
-	jwtValidator *jwt.Validator
+	cfg           *config.Config
+	logger        *slog.Logger
+	proxy         *httputil.ReverseProxy
+	healthProxy   *httputil.ReverseProxy
+	jwtValidator  *jwt.Validator
+	authProviders []plugin.AuthProvider
 }
 
 // ProxyDependencies exposes components created inside NewHandlerWithDeps that
 // need to be accessible from main (e.g. for startup rule loading and shutdown).
 type ProxyDependencies struct {
-	RuleStore    *admin.RuleStore
+	RuleStore    store.RuleStore
 	RateLimiters map[string]*ratelimit.RateLimiter
 	StopFn       func()
 }
@@ -52,6 +56,10 @@ func NewHandler(cfg *config.Config, logger *slog.Logger) (http.Handler, error) {
 // NewHandlerWithDeps builds the proxy handler and returns the internal
 // dependencies (rule store, rate limiters, stop function) so that callers
 // (main.go) can wire the startup rule loader and trigger clean shutdown.
+//
+// The function is plugin-aware: if plugins are registered (via blank imports
+// in the main package), it delegates middleware/route/auth setup to them.
+// Otherwise it falls back to direct inline construction (backwards-compatible).
 func NewHandlerWithDeps(cfg *config.Config, logger *slog.Logger) (http.Handler, *ProxyDependencies, error) {
 	targetURL, err := url.Parse(cfg.Server.TargetURL)
 	if err != nil {
@@ -95,88 +103,198 @@ func NewHandlerWithDeps(cfg *config.Config, logger *slog.Logger) (http.Handler, 
 		}
 	}
 
-	// Create rate limiters — one per traffic type.
-	ipLimiter := ratelimit.NewRateLimiter(ratelimit.RateLimiterConfig{
-		Name:           "ip",
-		Enabled:        cfg.Security.RateLimit.Enabled,
-		RequestsPerMin: cfg.Security.RateLimit.RequestsPerMin,
-		BanDuration:    time.Duration(cfg.Security.RateLimit.BanForMin) * time.Minute,
-		ThrottleDelay:  time.Duration(cfg.Security.RateLimit.ThrottleDelayMs) * time.Millisecond,
-		MaxDelaySlots:  cfg.Security.RateLimit.MaxDelaySlots,
-	})
+	mux := http.NewServeMux()
 
-	apikeyLimiter := ratelimit.NewRateLimiter(ratelimit.RateLimiterConfig{
-		Name:           "apikey",
-		Enabled:        cfg.Security.ApiKeyRateLimit.Enabled,
-		RequestsPerMin: cfg.Security.ApiKeyRateLimit.RequestsPerMin,
-		BanDuration:    time.Duration(cfg.Security.ApiKeyRateLimit.BanForMin) * time.Minute,
-		ThrottleDelay:  time.Duration(cfg.Security.ApiKeyRateLimit.ThrottleDelayMs) * time.Millisecond,
-		MaxDelaySlots:  cfg.Security.ApiKeyRateLimit.MaxDelaySlots,
-	})
+	// Determine if plugins are registered.
+	allPlugins := plugin.All()
+	usePlugins := len(allPlugins) > 0
 
-	jwtLimiter := ratelimit.NewRateLimiter(ratelimit.RateLimiterConfig{
-		Name:           "jwt",
-		Enabled:        cfg.Security.JwtRateLimit.Enabled,
-		RequestsPerMin: cfg.Security.JwtRateLimit.RequestsPerMin,
-		BanDuration:    time.Duration(cfg.Security.JwtRateLimit.BanForMin) * time.Minute,
-		ThrottleDelay:  time.Duration(cfg.Security.JwtRateLimit.ThrottleDelayMs) * time.Millisecond,
-		MaxDelaySlots:  cfg.Security.JwtRateLimit.MaxDelaySlots,
-	})
+	var ruleStore store.RuleStore
+	rateLimiters := map[string]*ratelimit.RateLimiter{}
+	var authProviders []plugin.AuthProvider
+	var pluginMiddlewares []Middleware
 
-	// Build request matcher for API key rate limiting.
-	matchRules := make([]ratelimit.RequestMatchRule, len(cfg.Security.ApiKeyRateLimit.Match))
-	for i, m := range cfg.Security.ApiKeyRateLimit.Match {
-		matchRules[i] = ratelimit.RequestMatchRule{
-			Host:   m.Host,
-			Path:   m.Path,
-			Header: m.Header,
+	if usePlugins {
+		// --- Plugin-based pipeline assembly ---
+
+		// Phase 1: Create default stores.
+		memStore := store.NewMemoryRuleStore()
+		ruleStore = memStore
+
+		kvFactory := func(ns string) store.KeyValueStore {
+			return store.NewMemoryKeyValueStore()
 		}
-	}
-	apiKeyMatcher, err := ratelimit.NewRequestMatcher(matchRules)
-	if err != nil {
-		return nil, nil, fmt.Errorf("invalid apikey_rate_limit.match: %w", err)
+
+		// Phase 2: Storage backend (optional, replaces defaults).
+		storagePersist := false
+		if sb := plugin.StorageBackend(); sb != nil && cfg.Storage.Enabled {
+			if cv, ok := sb.(plugin.ConfigValidator); ok {
+				if err := cv.ValidateConfig(cfg); err != nil {
+					return nil, nil, fmt.Errorf("storage plugin %q config validation: %w", sb.Name(), err)
+				}
+			}
+			if err := sb.Open(cfg, logger); err != nil {
+				return nil, nil, fmt.Errorf("storage plugin %q: open: %w", sb.Name(), err)
+			}
+			persistentStore, err := sb.NewRuleStore(cfg, logger)
+			if err != nil {
+				return nil, nil, fmt.Errorf("storage plugin %q: new rule store: %w", sb.Name(), err)
+			}
+			ruleStore = persistentStore
+			memStore.Stop() // no longer needed
+
+			kvFactory = func(ns string) store.KeyValueStore {
+				kv, err := sb.NewKeyValueStore(ns)
+				if err != nil {
+					logger.Error("storage plugin: new kv store failed", "namespace", ns, "error", err)
+					return store.NewMemoryKeyValueStore() // fallback
+				}
+				return kv
+			}
+			storagePersist = true
+		}
+
+		deps := &plugin.Deps{
+			Config:         cfg,
+			Logger:         logger,
+			RuleStore:      ruleStore,
+			KeyValueStore:  kvFactory,
+			StoragePersist: storagePersist,
+			RateLimiters:   rateLimiters,
+			AuthProviders:  nil,
+		}
+
+		// Phase 3: Config validation.
+		if err := validatePluginAvailability(cfg); err != nil {
+			return nil, nil, err
+		}
+		for _, p := range allPlugins {
+			if cv, ok := p.(plugin.ConfigValidator); ok {
+				if err := cv.ValidateConfig(cfg); err != nil {
+					return nil, nil, fmt.Errorf("plugin %q config validation: %w", p.Name(), err)
+				}
+			}
+		}
+
+		// Phase 4: Route providers.
+		for _, rp := range plugin.OfType[plugin.RouteProvider]() {
+			if err := rp.RegisterRoutes(mux, deps); err != nil {
+				return nil, nil, fmt.Errorf("plugin %q route registration: %w", rp.Name(), err)
+			}
+		}
+
+		// Phase 5: Auth providers.
+		authProviders = plugin.OfType[plugin.AuthProvider]()
+		deps.AuthProviders = authProviders
+
+		// Phase 6: Middleware providers.
+		for _, mp := range plugin.OfType[plugin.MiddlewareProvider]() {
+			mws, err := mp.BuildMiddleware(deps)
+			if err != nil {
+				return nil, nil, fmt.Errorf("plugin %q middleware: %w", mp.Name(), err)
+			}
+			for _, mw := range mws {
+				pluginMiddlewares = append(pluginMiddlewares, Middleware(mw))
+			}
+		}
+
+		// Phase 7: Lifecycle — start plugins.
+		for _, p := range allPlugins {
+			if starter, ok := p.(plugin.Starter); ok {
+				if err := starter.Start(context.Background()); err != nil {
+					return nil, nil, fmt.Errorf("plugin %q start: %w", p.Name(), err)
+				}
+			}
+		}
+	} else {
+		// --- Legacy direct construction (no plugins registered) ---
+
+		ipLimiter := ratelimit.NewRateLimiter(ratelimit.RateLimiterConfig{
+			Name:           "ip",
+			Enabled:        cfg.Security.RateLimit.Enabled,
+			RequestsPerMin: cfg.Security.RateLimit.RequestsPerMin,
+			BanDuration:    time.Duration(cfg.Security.RateLimit.BanForMin) * time.Minute,
+			ThrottleDelay:  time.Duration(cfg.Security.RateLimit.ThrottleDelayMs) * time.Millisecond,
+			MaxDelaySlots:  cfg.Security.RateLimit.MaxDelaySlots,
+		})
+
+		apikeyLimiter := ratelimit.NewRateLimiter(ratelimit.RateLimiterConfig{
+			Name:           "apikey",
+			Enabled:        cfg.Security.ApiKeyRateLimit.Enabled,
+			RequestsPerMin: cfg.Security.ApiKeyRateLimit.RequestsPerMin,
+			BanDuration:    time.Duration(cfg.Security.ApiKeyRateLimit.BanForMin) * time.Minute,
+			ThrottleDelay:  time.Duration(cfg.Security.ApiKeyRateLimit.ThrottleDelayMs) * time.Millisecond,
+			MaxDelaySlots:  cfg.Security.ApiKeyRateLimit.MaxDelaySlots,
+		})
+
+		jwtLimiter := ratelimit.NewRateLimiter(ratelimit.RateLimiterConfig{
+			Name:           "jwt",
+			Enabled:        cfg.Security.JwtRateLimit.Enabled,
+			RequestsPerMin: cfg.Security.JwtRateLimit.RequestsPerMin,
+			BanDuration:    time.Duration(cfg.Security.JwtRateLimit.BanForMin) * time.Minute,
+			ThrottleDelay:  time.Duration(cfg.Security.JwtRateLimit.ThrottleDelayMs) * time.Millisecond,
+			MaxDelaySlots:  cfg.Security.JwtRateLimit.MaxDelaySlots,
+		})
+
+		matchRules := make([]ratelimit.RequestMatchRule, len(cfg.Security.ApiKeyRateLimit.Match))
+		for i, m := range cfg.Security.ApiKeyRateLimit.Match {
+			matchRules[i] = ratelimit.RequestMatchRule{
+				Host:   m.Host,
+				Path:   m.Path,
+				Header: m.Header,
+			}
+		}
+		apiKeyMatcher, err := ratelimit.NewRequestMatcher(matchRules)
+		if err != nil {
+			return nil, nil, fmt.Errorf("invalid apikey_rate_limit.match: %w", err)
+		}
+
+		rateLimiters = map[string]*ratelimit.RateLimiter{
+			"ip":     ipLimiter,
+			"apikey": apikeyLimiter,
+			"jwt":    jwtLimiter,
+		}
+
+		var ruleChecker RuleChecker
+		if cfg.Admin.Enabled {
+			adminValidator := jwt.NewValidator(&cfg.Admin.JWT)
+			memStore := admin.NewRuleStore()
+			ruleStore = memStore
+			ruleChecker = memStore
+
+			adminAuth := admin.AdminAuthMiddleware(adminValidator, cfg.Admin.JWT.AllowedEmails, cfg.Admin.JWT.Filters)
+			mux.Handle("POST /admin/control", adminAuth(admin.ControlHandler(memStore, rateLimiters)))
+			mux.Handle("GET /admin/status", adminAuth(admin.StatusHandler(memStore, rateLimiters)))
+		}
+
+		skipIfJwt := cfg.Security.RateLimit.SkipIfJwtIdentified == nil || *cfg.Security.RateLimit.SkipIfJwtIdentified
+
+		pluginMiddlewares = []Middleware{
+			DynamicRuleCheck(ruleChecker),
+			ApiKeyRateLimit(apikeyLimiter, apiKeyMatcher, cfg.Security.ApiKeyRateLimit.KeyHeader, cfg.Security.ApiKeyRateLimit.IncludeIP),
+			JwtRateLimit(jwtLimiter, cfg.Security.JwtRateLimit.IncludeIP),
+			IpRateLimit(ipLimiter, skipIfJwt),
+		}
 	}
 
 	baseHandler := &handler{
-		cfg:          cfg,
-		logger:       logger,
-		proxy:        reverseProxy,
-		healthProxy:  healthProxy,
-		jwtValidator: jwt.NewValidator(&cfg.Auth.JWT),
+		cfg:           cfg,
+		logger:        logger,
+		proxy:         reverseProxy,
+		healthProxy:   healthProxy,
+		jwtValidator:  jwt.NewValidator(&cfg.Auth.JWT),
+		authProviders: authProviders,
 	}
 
-	// Admin control-plane.
-	var ruleChecker RuleChecker    // nil when admin disabled
-	var ruleStore *admin.RuleStore // nil when admin disabled
-
-	rateLimiters := map[string]*ratelimit.RateLimiter{
-		"ip":     ipLimiter,
-		"apikey": apikeyLimiter,
-		"jwt":    jwtLimiter,
-	}
-
-	mux := http.NewServeMux()
-
-	if cfg.Admin.Enabled {
-		adminValidator := jwt.NewValidator(&cfg.Admin.JWT)
-		ruleStore = admin.NewRuleStore()
-		ruleChecker = ruleStore
-
-		adminAuth := admin.AdminAuthMiddleware(adminValidator, cfg.Admin.JWT.AllowedEmails, cfg.Admin.JWT.Filters)
-		mux.Handle("POST /admin/control", adminAuth(admin.ControlHandler(ruleStore, rateLimiters)))
-		mux.Handle("GET /admin/status", adminAuth(admin.StatusHandler(ruleStore, rateLimiters)))
-	}
-
-	pipeline := applyMiddleware(baseHandler,
+	// Assemble pipeline: core middleware + plugin middleware.
+	coreMiddlewares := []Middleware{
 		RequestLogger(logger, cfg.Server.IncludePaths, cfg.Server.ExcludePaths),
 		BodyLimiter(cfg.Security.MaxBodyBytes),
 		HeaderSanitizer(cfg.Auth.HeaderPrefix),
 		PathFilter(cfg.Server.IncludePaths, cfg.Server.ExcludePaths),
-		DynamicRuleCheck(ruleChecker),
-		ApiKeyRateLimit(apikeyLimiter, apiKeyMatcher, cfg.Security.ApiKeyRateLimit.KeyHeader, cfg.Security.ApiKeyRateLimit.IncludeIP),
-		JwtRateLimit(jwtLimiter, cfg.Security.JwtRateLimit.IncludeIP),
-		IpRateLimit(ipLimiter, cfg.Security.RateLimit.SkipIfJwtIdentified == nil || *cfg.Security.RateLimit.SkipIfJwtIdentified),
-	)
+	}
+	allMiddleware := append(coreMiddlewares, pluginMiddlewares...)
+	pipeline := applyMiddleware(baseHandler, allMiddleware...)
 
 	healthPath := cfg.Server.HealthCheck.Path
 	if healthPath == "" {
@@ -190,6 +308,15 @@ func NewHandlerWithDeps(cfg *config.Config, logger *slog.Logger) (http.Handler, 
 		if ruleStore != nil {
 			ruleStore.Stop()
 		}
+		if usePlugins {
+			for _, p := range allPlugins {
+				if stopper, ok := p.(plugin.Stopper); ok {
+					if err := stopper.Stop(); err != nil {
+						logger.Error("plugin stop error", "plugin", p.Name(), "error", err)
+					}
+				}
+			}
+		}
 	}
 
 	deps := &ProxyDependencies{
@@ -199,6 +326,38 @@ func NewHandlerWithDeps(cfg *config.Config, logger *slog.Logger) (http.Handler, 
 	}
 
 	return mux, deps, nil
+}
+
+// validatePluginAvailability checks that config sections referencing plugins
+// are backed by registered plugins. Returns a clear error if not.
+func validatePluginAvailability(cfg *config.Config) error {
+	checks := []struct {
+		condition bool
+		plugin    string
+		message   string
+	}{
+		{
+			cfg.Security.RateLimit.Enabled ||
+				cfg.Security.ApiKeyRateLimit.Enabled ||
+				cfg.Security.JwtRateLimit.Enabled,
+			"ratelimit",
+			"rate limiting is configured but the ratelimit plugin is not compiled in",
+		},
+		{cfg.Admin.Enabled, "admin", "admin API is configured but the admin plugin is not compiled in"},
+		{cfg.Auth.APIKey.Enabled, "apikey", "API-key authentication is configured but the apikey plugin is not compiled in"},
+	}
+
+	for _, c := range checks {
+		if c.condition && plugin.Get(c.plugin) == nil {
+			return fmt.Errorf("%s — use the full build image or add the plugin import", c.message)
+		}
+	}
+
+	if cfg.Storage.Enabled && plugin.StorageBackend() == nil {
+		return fmt.Errorf("storage is enabled but no storage plugin is compiled in — use the full build image or add the plugin import")
+	}
+
+	return nil
 }
 
 func applyMiddleware(handler http.Handler, middlewares ...Middleware) http.Handler {
@@ -259,7 +418,31 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.cfg.Auth.APIKey.Enabled {
+	// Try plugin-based auth providers (e.g. API-key plugin).
+	if len(h.authProviders) > 0 {
+		for _, ap := range h.authProviders {
+			headers, err := ap.Authenticate(r, &h.cfg.Auth)
+			if err != nil {
+				if errors.Is(err, apikey.ErrMissingAPIKey) {
+					continue // this provider doesn't apply; try next
+				}
+				writeJSON(w, http.StatusUnauthorized, errorResponse{
+					Error:   "unauthorized",
+					Message: "invalid api key",
+				})
+				return
+			}
+			if headers != nil {
+				applyHeaders(r.Header, headers)
+				h.forward(w, r)
+				return
+			}
+			// headers == nil && err == nil means provider is disabled; try next.
+		}
+	}
+
+	// Legacy inline API-key auth (when no apikey plugin registered).
+	if len(h.authProviders) == 0 && h.cfg.Auth.APIKey.Enabled {
 		headers, err := apikey.ValidateAPIKey(r, &h.cfg.Auth)
 		if err != nil {
 			if errors.Is(err, apikey.ErrMissingAPIKey) {

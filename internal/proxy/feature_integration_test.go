@@ -1428,7 +1428,7 @@ value = "{{ENV.TEST_API_KEY_VAL}}"
 	}
 }
 
-// TestConfigFile_RealConfigTOMLWithOverrides loads the actual config/config.toml
+// TestConfigFile_RealConfigTOMLWithOverrides loads the actual config/config-flex.toml
 // from the repository, overrides settings via env vars, and verifies the proxy works.
 func TestConfigFile_RealConfigTOMLWithOverrides(t *testing.T) {
 	if testing.Short() {
@@ -1460,11 +1460,11 @@ func TestConfigFile_RealConfigTOMLWithOverrides(t *testing.T) {
 		"PROXY_SERVER_STRIP_PREFIX": "",
 	})
 
-	// Load the actual config/config.toml from the repository
-	cfgPath := filepath.Join("..", "..", "config", "config.toml")
+	// Load the actual config/config-flex.toml from the repository
+	cfgPath := filepath.Join("..", "..", "config", "config-flex.toml")
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
-		t.Fatalf("failed to load real config.toml: %v", err)
+		t.Fatalf("failed to load real config-flex.toml: %v", err)
 	}
 
 	// Verify env overrides took effect

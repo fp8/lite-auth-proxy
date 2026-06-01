@@ -7,15 +7,15 @@ import (
 	"os"
 	"time"
 
-	"github.com/fp8/lite-auth-proxy/internal/admin"
 	"github.com/fp8/lite-auth-proxy/internal/ratelimit"
+	"github.com/fp8/lite-auth-proxy/internal/store"
 )
 
 // EnvThrottleRules is the environment variable name for persisted throttle rules.
 const EnvThrottleRules = "PROXY_THROTTLE_RULES"
 
 // PersistedRule is the JSON shape stored in PROXY_THROTTLE_RULES.
-// It mirrors admin.Rule but uses an absolute ExpiresAt timestamp.
+// It mirrors store.Rule but uses an absolute ExpiresAt timestamp.
 type PersistedRule struct {
 	RuleID      string  `json:"ruleId"`
 	TargetHost  string  `json:"targetHost"`
@@ -29,15 +29,15 @@ type PersistedRule struct {
 
 // RuleLoader loads persisted throttle rules from PROXY_THROTTLE_RULES on startup.
 type RuleLoader struct {
-	store        *admin.RuleStore
+	store        store.RuleStore
 	rateLimiters map[string]*ratelimit.RateLimiter
 	logger       *slog.Logger
 }
 
 // NewRuleLoader creates a RuleLoader. rateLimiters may be nil.
-func NewRuleLoader(store *admin.RuleStore, rateLimiters map[string]*ratelimit.RateLimiter, logger *slog.Logger) *RuleLoader {
+func NewRuleLoader(rs store.RuleStore, rateLimiters map[string]*ratelimit.RateLimiter, logger *slog.Logger) *RuleLoader {
 	return &RuleLoader{
-		store:        store,
+		store:        rs,
 		rateLimiters: rateLimiters,
 		logger:       logger,
 	}
@@ -79,7 +79,7 @@ func (l *RuleLoader) Load() error {
 			continue
 		}
 
-		rule := &admin.Rule{
+		rule := &store.Rule{
 			RuleID:          pr.RuleID,
 			TargetHost:      pr.TargetHost,
 			Action:          pr.Action,

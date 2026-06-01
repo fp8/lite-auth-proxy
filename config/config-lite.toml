@@ -1,0 +1,27 @@
+# lite-auth-proxy configuration (lite build)
+# Minimal JWT proxy — no rate limiting, no admin API, no API-key auth.
+# Use the flex build image for those features.
+
+[server]
+port = 8888
+target_url = "http://localhost:8080"
+include_paths = ["/*"]
+exclude_paths = ["/healthz"]
+shutdown_timeout_secs = 10
+
+[server.health_check]
+path = "/healthz"
+
+[auth]
+header_prefix = "X-AUTH-"
+
+[auth.jwt]
+enabled = true
+issuer = "https://securetoken.google.com/{{ENV.GOOGLE_CLOUD_PROJECT}}"
+audience = "{{ENV.GOOGLE_CLOUD_PROJECT}}"
+tolerance_secs = 30
+cache_ttl_mins = 1440
+
+[auth.jwt.mappings]
+sub = "USER-ID"
+email = "USER-EMAIL"

@@ -1,0 +1,71 @@
+name: Publish proxy images
+
+# Builds the lite and flex builds and pushes them to Docker Hub as
+# farport/lite-auth-proxy and farport/flex-auth-proxy.
+#
+# Release tags must equal the Version in cmd/flex/main.go exactly, with NO
+# leading 'v' (e.g. "1.2.1"). A mismatch fails the build.
+#
+# Required secrets (defined as organization secrets):
+#   FP8_DOCKER_USER    - Docker Hub user/org with push access to farport/*
+#   FP8_DOCKER_PUBLISH - Docker Hub access token (Account Settings > Security)
+
+on:
+  # Publish when a GitHub Release is published
+  release:
+    types: [published]
+  # Allow building/pushing on demand from the Actions tab (for testing)
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Extra image tag to push (e.g. latest or a version)"
+        required: false
+        default: ""
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [lite, flex]
+    name: ${{ matrix.variant }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify release tag matches code version
+        if: github.event_name == 'release'
+        run: |
+          # Release tags must equal the Version in cmd/flex/main.go exactly,
+          # with no leading 'v' (e.g. tag "1.2.1", not "v1.2.1").
+          GO_VERSION=$(grep 'Version = ' cmd/flex/main.go | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          TAG="${{ github.event.release.tag_name }}"
+          echo "Release tag:                 $TAG"
+          echo "Code version (main.go):      $GO_VERSION"
+          if [ "$TAG" != "$GO_VERSION" ]; then
+            echo "::error::Release tag '$TAG' does not match the Version '$GO_VERSION' in cmd/flex/main.go. Tags must match exactly with no 'v' prefix."
+            exit 1
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.FP8_DOCKER_USER }}
+          password: ${{ secrets.FP8_DOCKER_PUBLISH }}
+
+      - name: Build and push
+        # Delegates to the same script `make docker-push-*` uses, so local and
+        # CI builds are identical. Version is read from cmd/flex/main.go.
+        env:
+          IMAGE: farport/${{ matrix.variant }}-auth-proxy
+          PUSH: "true"
+          EXTRA_TAGS: ${{ github.event.inputs.tag }}
+          # Reuse the GitHub Actions layer cache, scoped per variant
+          BUILD_EXTRA_ARGS: "--cache-from type=gha,scope=${{ matrix.variant }} --cache-to type=gha,mode=max,scope=${{ matrix.variant }}"
+        run: ./scripts/docker-build.sh ${{ matrix.variant }}

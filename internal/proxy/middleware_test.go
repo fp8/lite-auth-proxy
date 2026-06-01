@@ -50,6 +50,41 @@ func TestShouldAuthenticateIncludeMatch(t *testing.T) {
 	}
 }
 
+func TestShouldAuthenticateMultiSegmentPath(t *testing.T) {
+	cases := []struct {
+		path     string
+		wantAuth bool
+	}{
+		{"/", true},
+		{"/abc", true},
+		{"/abc/", true},
+		{"/abc/def", true},
+		{"/api/limit-service/portfolio", true},
+		{"/healthz", false},
+	}
+	for _, tc := range cases {
+		got := ShouldAuthenticate(tc.path, []string{"/*"}, []string{"/healthz"})
+		if got != tc.wantAuth {
+			t.Errorf("ShouldAuthenticate(%q): got %v, want %v", tc.path, got, tc.wantAuth)
+		}
+	}
+}
+
+func TestPathFilterRequiresAuthWithQueryString(t *testing.T) {
+	authRequired := false
+	h := PathFilter([]string{"/*"}, []string{"/healthz"})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authRequired = AuthRequiredFromContext(r.Context())
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest("GET", "http://localhost:8888/api/limit-service/portfolio?rptDate=2026-01-22&abi=08431&desk=STRATEGICO", nil)
+	h.ServeHTTP(httptest.NewRecorder(), req)
+
+	if !authRequired {
+		t.Fatal("expected auth to be required for multi-segment path with query string")
+	}
+}
+
 func TestIpRateLimitBlocksWhenLimited(t *testing.T) {
 	limiter := newTestLimiter(1) // 1 RPM
 	mw := IpRateLimit(limiter, false)

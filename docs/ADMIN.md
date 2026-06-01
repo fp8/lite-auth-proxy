@@ -2,7 +2,9 @@
 
 The admin control plane provides runtime traffic management — throttle, block, or allow requests — without redeploying the proxy. It exposes two HTTP endpoints (`/admin/control` and `/admin/status`) and is **disabled by default**.
 
-> **In-memory only.** All rules created via the admin API are stored in process memory. They are lost when the process exits — including during Cloud Run scale-to-zero, new revision deployments, or any container restart. See [Serverless Caveat](#serverless-caveat-cloud-run-and-ephemeral-instances) for mitigation strategies.
+> **Plugin required.** This feature requires the `admin` plugin. The lite build does not include it. See the [Admin Plugin configuration](PLUGINS.md#admin-plugin) for all config fields.
+
+> **In-memory by default.** Without a storage plugin, all rules are stored in process memory and lost on restart. For persistent, cross-instance rules, enable the [Firestore storage plugin](PLUGINS.md#storage-firestore-plugin). See also [Serverless Caveat](#serverless-caveat-cloud-run-and-ephemeral-instances).
 
 ## Table of Contents
 

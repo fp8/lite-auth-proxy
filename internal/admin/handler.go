@@ -7,10 +7,11 @@ import (
 	"time"
 
 	"github.com/fp8/lite-auth-proxy/internal/ratelimit"
+	"github.com/fp8/lite-auth-proxy/internal/store"
 )
 
 // ControlHandler handles POST /admin/control requests.
-func ControlHandler(store *RuleStore, rateLimiters map[string]*ratelimit.RateLimiter) http.Handler {
+func ControlHandler(rs store.RuleStore, rateLimiters map[string]*ratelimit.RateLimiter) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req ControlRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -23,11 +24,11 @@ func ControlHandler(store *RuleStore, rateLimiters map[string]*ratelimit.RateLim
 
 		switch req.Command {
 		case "set-rule":
-			handleSetRule(w, store, rateLimiters, req.Rule)
+			handleSetRule(w, rs, rateLimiters, req.Rule)
 		case "remove-rule":
-			handleRemoveRule(w, store, rateLimiters, req.RuleID)
+			handleRemoveRule(w, rs, rateLimiters, req.RuleID)
 		case "remove-all":
-			handleRemoveAll(w, store, rateLimiters)
+			handleRemoveAll(w, rs, rateLimiters)
 		default:
 			writeAdminJSON(w, http.StatusBadRequest, map[string]string{
 				"error":   "bad_request",
@@ -37,7 +38,7 @@ func ControlHandler(store *RuleStore, rateLimiters map[string]*ratelimit.RateLim
 	})
 }
 
-func handleSetRule(w http.ResponseWriter, store *RuleStore, rateLimiters map[string]*ratelimit.RateLimiter, rule *Rule) {
+func handleSetRule(w http.ResponseWriter, rs store.RuleStore, rateLimiters map[string]*ratelimit.RateLimiter, rule *Rule) {
 	if rule == nil {
 		writeAdminJSON(w, http.StatusBadRequest, map[string]string{
 			"error": "bad_request", "message": "rule is required for set-rule",
@@ -50,7 +51,7 @@ func handleSetRule(w http.ResponseWriter, store *RuleStore, rateLimiters map[str
 		})
 		return
 	}
-	if err := store.SetRule(rule); err != nil {
+	if err := rs.SetRule(rule); err != nil {
 		writeAdminJSON(w, http.StatusInternalServerError, map[string]string{
 			"error": "internal_error", "message": err.Error(),
 		})
@@ -78,14 +79,14 @@ func handleSetRule(w http.ResponseWriter, store *RuleStore, rateLimiters map[str
 	})
 }
 
-func handleRemoveRule(w http.ResponseWriter, store *RuleStore, rateLimiters map[string]*ratelimit.RateLimiter, ruleID string) {
+func handleRemoveRule(w http.ResponseWriter, rs store.RuleStore, rateLimiters map[string]*ratelimit.RateLimiter, ruleID string) {
 	if ruleID == "" {
 		writeAdminJSON(w, http.StatusBadRequest, map[string]string{
 			"error": "bad_request", "message": "ruleId is required for remove-rule",
 		})
 		return
 	}
-	found, err := store.RemoveRule(ruleID)
+	found, err := rs.RemoveRule(ruleID)
 	if err != nil {
 		writeAdminJSON(w, http.StatusInternalServerError, map[string]string{
 			"error": "internal_error", "message": err.Error(),
@@ -104,8 +105,8 @@ func handleRemoveRule(w http.ResponseWriter, store *RuleStore, rateLimiters map[
 	})
 }
 
-func handleRemoveAll(w http.ResponseWriter, store *RuleStore, rateLimiters map[string]*ratelimit.RateLimiter) {
-	count := store.RemoveAll()
+func handleRemoveAll(w http.ResponseWriter, rs store.RuleStore, rateLimiters map[string]*ratelimit.RateLimiter) {
+	count := rs.RemoveAll()
 	writeAdminJSON(w, http.StatusOK, RemoveResponse{
 		Status:       "ok",
 		RulesRemoved: count,
@@ -113,14 +114,14 @@ func handleRemoveAll(w http.ResponseWriter, store *RuleStore, rateLimiters map[s
 }
 
 // StatusHandler handles GET /admin/status requests.
-func StatusHandler(store *RuleStore, rateLimiters map[string]*ratelimit.RateLimiter) http.Handler {
+func StatusHandler(rs store.RuleStore, rateLimiters map[string]*ratelimit.RateLimiter) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		limiterStatus := make(map[string]interface{})
 		for name, limiter := range rateLimiters {
 			limiterStatus[name] = limiter.GetStatus()
 		}
 		resp := StatusResponse{
-			Rules:        store.GetStatus(),
+			Rules:        rs.GetStatus(),
 			RateLimiters: limiterStatus,
 		}
 		writeAdminJSON(w, http.StatusOK, resp)

@@ -1,50 +1,65 @@
-.PHONY: build run test test-all coverage lint clean help tidy \
-	docker-build docker-run docker-push \
-	cloud-build
+.PHONY: build-flex build-lite build-all run-flex run-lite test test-all coverage lint clean help tidy \
+	docker-build-flex docker-build-lite docker-build-all \
+	docker-run-flex docker-push-flex docker-push-lite docker-push-all \
+	e2e-flex e2e-lite e2e-remote
 
 # Default target
 .DEFAULT_GOAL := help
 
 # Variables
-GO_VERSION?=$(shell grep 'Version = ' cmd/proxy/main.go | head -1 | sed 's/.*"\(.*\)".*/\1/')
+GO_VERSION?=$(shell grep 'Version = ' cmd/flex/main.go | head -1 | sed 's/.*"\(.*\)".*/\1/')
 VERSION=dev
-MAJOR_MINOR=$(shell echo $(VERSION) | cut -d. -f1,2)
-BINARY_NAME=lite-auth-proxy
+FLEX_BINARY=flex-auth-proxy
+LITE_BINARY=lite-auth-proxy
 BUILD_DIR=bin
-CONFIG_PATH=config/config.toml
 GO=go
 GOFLAGS=-v
 LDFLAGS=-ldflags "-s -w -X main.Version=$(VERSION)"
-DOCKER_REGISTRY?=europe-docker.pkg.dev
-DOCKER_PROJECT_ID?=$(shell echo $$GOOGLE_CLOUD_PROJECT)
-DOCKER_REPO_NAME?=docker
-DOCKER_REPO=$(DOCKER_REGISTRY)/$(DOCKER_PROJECT_ID)/$(DOCKER_REPO_NAME)
-IMAGE_NAME=$(DOCKER_REPO)/lite-auth-proxy
-IMAGE_TAG=$(VERSION)
-GOOGLE_CLOUD_PROJECT?=$(shell echo $$GOOGLE_CLOUD_PROJECT)
+# Docker images are published to Docker Hub under the farport/ namespace —
+# the exact same images the GitHub Actions release workflow builds (both call
+# scripts/docker-build.sh). To target a private Google Artifact Registry
+# instead, use: make -f Makefile.gcp ...
+DOCKER_NAMESPACE?=farport
+FLEX_IMAGE=$(DOCKER_NAMESPACE)/flex-auth-proxy
+LITE_IMAGE=$(DOCKER_NAMESPACE)/lite-auth-proxy
+IMAGE_TAG?=$(GO_VERSION)
 DOCKER_TARGET_URL?=http://localhost:8080
 
-# Build the application
-build:
-	@echo "Building $(BINARY_NAME) version $(VERSION)..."
+# Build the flex application (all plugins)
+build-flex:
+	@echo "Building $(FLEX_BINARY) version $(VERSION)..."
 	@mkdir -p $(BUILD_DIR)
-	$(GO) build $(GOFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) ./cmd/proxy
+	$(GO) build $(GOFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(FLEX_BINARY) ./cmd/flex
 
-# Run the application
-run: build
-	@echo "Running $(BINARY_NAME)..."
-	./$(BUILD_DIR)/$(BINARY_NAME) -config $(CONFIG_PATH)
+# Build the lite application (no plugins)
+build-lite:
+	@echo "Building $(LITE_BINARY) version $(VERSION)..."
+	@mkdir -p $(BUILD_DIR)
+	$(GO) build $(GOFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(LITE_BINARY) ./cmd/lite
+
+# Build both variants
+build-all: build-flex build-lite
+
+# Run the flex application
+run-flex: build-flex
+	@echo "Running $(FLEX_BINARY)..."
+	./$(BUILD_DIR)/$(FLEX_BINARY) -config config/config-flex.toml
+
+# Run the lite application
+run-lite: build-lite
+	@echo "Running $(LITE_BINARY)..."
+	./$(BUILD_DIR)/$(LITE_BINARY) -config config/config-lite.toml
 
 # Run unit tests only
 # Excludes files with //go:build integration tag
-# Runs fast unit tests only: ~92 tests
+# Runs fast unit tests only: ~150 tests
 test:
 	@echo "Running unit tests..."
 	$(GO) test -v -race ./...
 
 # Run all tests (unit + integration)
 # Includes files with //go:build integration tag
-# Runs ALL tests: ~105 tests
+# Runs ALL tests: ~190 tests
 test-all:
 	@echo "Running all tests..."
 	@bash -c 'set -a; . .env 2>/dev/null; set +a; $(GO) test -v -race -tags=integration ./...'
@@ -56,6 +71,17 @@ coverage:
 	@echo "Generating coverage report..."
 	@$(GO) tool cover -html=coverage.out -o coverage.html
 	@echo "Coverage report generated: coverage.html"
+
+# End-to-end tests (Gherkin/behave) against the Docker image or a deployment.
+# See e2e/README.md. Requires Docker and uv.
+e2e-flex:
+	@./e2e/run.sh local flex
+e2e-lite:
+	@./e2e/run.sh local lite
+# Usage: make e2e-remote URL=https://your-proxy-url
+e2e-remote:
+	@test -n "$(URL)" || (echo "Set URL=... e.g. make e2e-remote URL=https://host" && exit 2)
+	@./e2e/run.sh remote "$(URL)"
 
 # Run linter (requires golangci-lint)
 lint:
@@ -79,74 +105,55 @@ tidy:
 help:
 	@echo "Available targets:"
 	@echo "  help              - Show this help message (default)"
-	@echo "  build             - Build the application binary (version from cmd/proxy/main.go)"
-	@echo "  run               - Build and run the application"
-	@echo "  test              - Run unit tests only (~92 tests)"
-	@echo "  test-all          - Run all tests including integration (~105 tests)"
+	@echo "  build-flex        - Build flex-auth-proxy binary (all plugins)"
+	@echo "  build-lite        - Build lite-auth-proxy binary (no plugins)"
+	@echo "  build-all         - Build both flex and lite binaries"
+	@echo "  run-flex          - Build and run flex-auth-proxy"
+	@echo "  run-lite          - Build and run lite-auth-proxy"
+	@echo "  test              - Run unit tests only"
+	@echo "  test-all          - Run all tests including integration"
+	@echo "  e2e-flex          - Run Gherkin e2e tests against the flex Docker image (build it first)"
+	@echo "  e2e-lite          - Run Gherkin e2e tests against the lite Docker image (build it first)"
+	@echo "  e2e-remote URL=.. - Run Gherkin e2e tests against a deployed service"
 	@echo "  coverage          - Run all tests and generate HTML coverage report"
 	@echo "  lint              - Run golangci-lint"
 	@echo "  tidy              - Tidy go modules"
 	@echo "  clean             - Remove build artifacts and coverage files"
 	@echo ""
-	@echo "Docker targets (version: $(VERSION), tags: $(VERSION) and $(MAJOR_MINOR)):"
-	@echo "  docker-build      - Build Docker images (requires GOOGLE_CLOUD_PROJECT env var)"
-	@echo "  docker-run        - Run proxy + echo via Docker Compose"
-	@echo "  docker-push       - Push Docker images to GCP Artifact Registry (requires GOOGLE_CLOUD_PROJECT)"
+	@echo "Docker targets (Docker Hub: $(DOCKER_NAMESPACE)/*, version from cmd/flex/main.go: $(GO_VERSION)):"
+	@echo "  docker-build-flex - Build flex-auth-proxy image ($(FLEX_IMAGE))"
+	@echo "  docker-build-lite - Build lite-auth-proxy image ($(LITE_IMAGE))"
+	@echo "  docker-build-all  - Build both flex and lite Docker images"
+	@echo "  docker-run-flex   - Build + run flex-auth-proxy + echo via Docker Compose"
+	@echo "  docker-push-flex  - Build and push flex-auth-proxy image to Docker Hub"
+	@echo "  docker-push-lite  - Build and push lite-auth-proxy image to Docker Hub"
+	@echo "  docker-push-all   - Build and push both images to Docker Hub"
 	@echo ""
-	@echo "Cloud Build targets:"
-	@echo "  cloud-build       - Submit build to Google Cloud Build (requires GOOGLE_CLOUD_PROJECT and gcloud CLI)"
-	@echo ""
-	@echo "Note: Set GOOGLE_CLOUD_PROJECT environment variable or copy .env.example to .env and source it"
+	@echo "To build/push to a private Google Artifact Registry instead:"
+	@echo "  make -f Makefile.gcp help"
 
-# Docker targets
-docker-build:
-	@if [ -z "$(DOCKER_PROJECT_ID)" ]; then \
-		echo "Error: DOCKER_PROJECT_ID or GOOGLE_CLOUD_PROJECT environment variable must be set"; \
-		exit 1; \
-	fi
-	@echo "Building Docker image: $(IMAGE_NAME):$(VERSION)"
-	docker build \
-		--build-arg VERSION=$(GO_VERSION) \
-		-t $(IMAGE_NAME):$(VERSION) \
-		-f Dockerfile .
-	@echo "Docker images built successfully:"
-	@echo "  - $(IMAGE_NAME):$(VERSION)"
+# Docker targets — delegate to scripts/docker-build.sh so the Makefile and the
+# GitHub Actions release workflow build identical images (Docker Hub farport/*).
+docker-build-flex:
+	IMAGE=$(FLEX_IMAGE) ./scripts/docker-build.sh flex
 
-docker-run:
-	@if [ -z "$(GOOGLE_CLOUD_PROJECT)" ]; then \
-		echo "Error: GOOGLE_CLOUD_PROJECT environment variable must be set"; \
-		exit 1; \
-	fi
-	@echo "Running proxy + echo in Docker Compose..."
+docker-build-lite:
+	IMAGE=$(LITE_IMAGE) ./scripts/docker-build.sh lite
+
+docker-build-all: docker-build-flex docker-build-lite
+
+docker-run-flex: docker-build-flex
+	@echo "Running flex-auth-proxy + echo in Docker Compose..."
 	GOOGLE_CLOUD_PROJECT=fp8devel \
-	IMAGE_NAME=$(IMAGE_NAME) \
+	IMAGE_NAME=$(FLEX_IMAGE) \
 	IMAGE_TAG=$(IMAGE_TAG) \
 	PROXY_LOG_MODE=development \
 	docker compose up --remove-orphans
 
-docker-push:
-	@if [ -z "$(DOCKER_PROJECT_ID)" ]; then \
-		echo "Error: GOOGLE_CLOUD_PROJECT environment variable must be set"; \
-		exit 1; \
-	fi
-	@echo "Pushing Docker images to GCP Artifact Registry..."
-	docker push $(IMAGE_NAME):$(VERSION)
-	docker push $(IMAGE_NAME):$(MAJOR_MINOR)
-	@echo "Docker images pushed:"
-	@echo "  - $(IMAGE_NAME):$(VERSION)"
-	@echo "  - $(IMAGE_NAME):$(MAJOR_MINOR)"
+docker-push-flex:
+	IMAGE=$(FLEX_IMAGE) PUSH=true ./scripts/docker-build.sh flex
 
-# Cloud Build target
-cloud-build:
-	@if [ -z "$(GOOGLE_CLOUD_PROJECT)" ]; then \
-		echo "Error: GOOGLE_CLOUD_PROJECT environment variable must be set"; \
-		exit 1; \
-	fi
-	@echo "Submitting build to Google Cloud Build..."
-	@if ! command -v gcloud &> /dev/null; then \
-		echo "Error: gcloud CLI not found. Install it from https://cloud.google.com/sdk/docs/install"; \
-		exit 1; \
-	fi
-	gcloud builds submit --config cloudbuild.yaml \
-		--project=$(GOOGLE_CLOUD_PROJECT)
-	@echo "Build submitted to Cloud Build. View progress in GCP Console."
+docker-push-lite:
+	IMAGE=$(LITE_IMAGE) PUSH=true ./scripts/docker-build.sh lite
+
+docker-push-all: docker-push-flex docker-push-lite

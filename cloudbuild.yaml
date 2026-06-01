@@ -6,7 +6,7 @@ steps:
     args:
       - '-c'
       - |
-        VERSION=$$(grep 'Version = ' cmd/proxy/main.go | head -1 | sed 's/.*"\(.*\)".*/\1/')
+        VERSION=$$(grep 'Version = ' cmd/flex/main.go | head -1 | sed 's/.*"\(.*\)".*/\1/')
         MAJOR_MINOR=$$(echo $$VERSION | cut -d. -f1,2)
         echo "Full version: $$VERSION"
         echo "Major.Minor: $$MAJOR_MINOR"
@@ -27,8 +27,8 @@ steps:
       - 'GOPROXY=https://proxy.golang.org,direct'
     waitFor: ['version']
 
-  # Step 3: Build Docker image
-  - id: 'build'
+  # Step 3a: Build flex-auth-proxy Docker image (all plugins)
+  - id: 'build-flex'
     name: 'gcr.io/cloud-builders/docker'
     entrypoint: 'bash'
     args:
@@ -40,13 +40,13 @@ steps:
         DOCKER_REPO_NAME=${_DOCKER_REPO_NAME}
         docker build \
           --build-arg VERSION=$$VERSION \
-          -t $$DOCKER_REGISTRY/${PROJECT_ID}/$$DOCKER_REPO_NAME/lite-auth-proxy:$$VERSION \
-          -t $$DOCKER_REGISTRY/${PROJECT_ID}/$$DOCKER_REPO_NAME/lite-auth-proxy:$$MAJOR_MINOR \
-          -f Dockerfile .
+          -t $$DOCKER_REGISTRY/${_REGISTRY_PROJECT_ID}/$$DOCKER_REPO_NAME/flex-auth-proxy:$$VERSION \
+          -t $$DOCKER_REGISTRY/${_REGISTRY_PROJECT_ID}/$$DOCKER_REPO_NAME/flex-auth-proxy:$$MAJOR_MINOR \
+          -f Dockerfile.flex .
     waitFor: ['test']
 
-  # Step 4: Push Docker image
-  - id: 'push'
+  # Step 3b: Build lite-auth-proxy Docker image (no plugins)
+  - id: 'build-lite'
     name: 'gcr.io/cloud-builders/docker'
     entrypoint: 'bash'
     args:
@@ -56,9 +56,42 @@ steps:
         MAJOR_MINOR=$$(cat /workspace/major-minor.txt)
         DOCKER_REGISTRY=${_DOCKER_REGISTRY}
         DOCKER_REPO_NAME=${_DOCKER_REPO_NAME}
-        docker push $$DOCKER_REGISTRY/${PROJECT_ID}/$$DOCKER_REPO_NAME/lite-auth-proxy:$$VERSION
-        docker push $$DOCKER_REGISTRY/${PROJECT_ID}/$$DOCKER_REPO_NAME/lite-auth-proxy:$$MAJOR_MINOR
-    waitFor: ['build']
+        docker build \
+          --build-arg VERSION=$$VERSION \
+          -t $$DOCKER_REGISTRY/${_REGISTRY_PROJECT_ID}/$$DOCKER_REPO_NAME/lite-auth-proxy:$$VERSION \
+          -t $$DOCKER_REGISTRY/${_REGISTRY_PROJECT_ID}/$$DOCKER_REPO_NAME/lite-auth-proxy:$$MAJOR_MINOR \
+          -f Dockerfile.lite .
+    waitFor: ['test']
+
+  # Step 4a: Push flex-auth-proxy image
+  - id: 'push-flex'
+    name: 'gcr.io/cloud-builders/docker'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        VERSION=$$(cat /workspace/version.txt)
+        MAJOR_MINOR=$$(cat /workspace/major-minor.txt)
+        DOCKER_REGISTRY=${_DOCKER_REGISTRY}
+        DOCKER_REPO_NAME=${_DOCKER_REPO_NAME}
+        docker push $$DOCKER_REGISTRY/${_REGISTRY_PROJECT_ID}/$$DOCKER_REPO_NAME/flex-auth-proxy:$$VERSION
+        docker push $$DOCKER_REGISTRY/${_REGISTRY_PROJECT_ID}/$$DOCKER_REPO_NAME/flex-auth-proxy:$$MAJOR_MINOR
+    waitFor: ['build-flex']
+
+  # Step 4b: Push lite-auth-proxy image
+  - id: 'push-lite'
+    name: 'gcr.io/cloud-builders/docker'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        VERSION=$$(cat /workspace/version.txt)
+        MAJOR_MINOR=$$(cat /workspace/major-minor.txt)
+        DOCKER_REGISTRY=${_DOCKER_REGISTRY}
+        DOCKER_REPO_NAME=${_DOCKER_REPO_NAME}
+        docker push $$DOCKER_REGISTRY/${_REGISTRY_PROJECT_ID}/$$DOCKER_REPO_NAME/lite-auth-proxy:$$VERSION
+        docker push $$DOCKER_REGISTRY/${_REGISTRY_PROJECT_ID}/$$DOCKER_REPO_NAME/lite-auth-proxy:$$MAJOR_MINOR
+    waitFor: ['build-lite']
 
 # Note: The images: block has been deliberately removed.
 
@@ -66,6 +99,7 @@ steps:
 substitutions:
   _DOCKER_REGISTRY: 'europe-docker.pkg.dev'
   _DOCKER_REPO_NAME: 'docker'
+  _REGISTRY_PROJECT_ID: 'fp8main'
 
 # Build options
 options:

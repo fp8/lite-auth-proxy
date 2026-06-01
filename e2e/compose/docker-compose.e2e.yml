@@ -1,0 +1,63 @@
+# End-to-end test stack.
+#
+#   echo      — a request-reflecting upstream (so we can assert which headers
+#               the proxy injected before forwarding).
+#   proxy     — the image under test, configured the way a real deployment is:
+#               JWT auth on, generous rate limit (so it never interferes with
+#               the auth scenarios). API-key + admin are toggled on for flex.
+#   proxy-rl  — the SAME image, but configured purely as a rate limiter with a
+#               tiny limit, used only by the rate-limiting feature so its
+#               IP-ban side effects stay isolated from everything else.
+#
+# All knobs are env-var overrides (PROXY_*), so nothing needs to be rebuilt or
+# mounted. run.sh sets PROXY_IMAGE and the flex/lite toggles.
+
+services:
+  echo:
+    image: mendhak/http-https-echo:39
+    environment:
+      HTTP_PORT: "8080"
+    expose:
+      - "8080"
+
+  proxy:
+    image: ${PROXY_IMAGE}
+    depends_on:
+      - echo
+    ports:
+      - "${E2E_PORT:-8888}:8888"
+    environment:
+      GOOGLE_CLOUD_PROJECT: fp8devel
+      PROXY_SERVER_TARGET_URL: http://echo:8080
+      # Generous limit: rate limiting must not interfere with auth scenarios.
+      PROXY_SECURITY_RATE_LIMIT_REQUESTS_PER_MIN: "100000"
+      PROXY_AUTH_JWT_ENABLED: "true"
+      # API-key auth (flex only; harmless/ignored intent on lite where it's off).
+      PROXY_AUTH_API_KEY_ENABLED: ${E2E_APIKEY_ENABLED:-false}
+      PROXY_AUTH_API_KEY_NAME: ${E2E_API_KEY_HEADER:-X-API-KEY}
+      API_KEY_SECRET: ${E2E_API_KEY:-test-api-key-123456}
+      PROXY_AUTH_API_KEY_PAYLOAD_SERVICE: internal
+      # Admin control plane (flex only) — enabled so we can prove it's locked.
+      # An allowlist is required when admin is on; the value is irrelevant here
+      # because the tests only assert that *unauthenticated* calls are refused.
+      PROXY_ADMIN_ENABLED: ${E2E_ADMIN_ENABLED:-false}
+      PROXY_ADMIN_JWT_ALLOWED_EMAILS: admin@fp8devel.iam.gserviceaccount.com
+      PROXY_LOG_MODE: ${PROXY_LOG_MODE:-development}
+
+  proxy-rl:
+    image: ${PROXY_IMAGE}
+    depends_on:
+      - echo
+    ports:
+      - "${E2E_RL_PORT:-8889}:8888"
+    environment:
+      GOOGLE_CLOUD_PROJECT: fp8devel
+      PROXY_SERVER_TARGET_URL: http://echo:8080
+      # Rate-limit-only mode: both auth methods off → requests pass straight to
+      # the limiter, so behaviour is deterministic regardless of build.
+      PROXY_AUTH_JWT_ENABLED: "false"
+      PROXY_AUTH_API_KEY_ENABLED: "false"
+      PROXY_SECURITY_RATE_LIMIT_ENABLED: "true"
+      PROXY_SECURITY_RATE_LIMIT_REQUESTS_PER_MIN: "3"
+      PROXY_SECURITY_RATE_LIMIT_BAN_FOR_MIN: "1"
+      PROXY_LOG_MODE: ${PROXY_LOG_MODE:-development}

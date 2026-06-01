@@ -7,7 +7,7 @@ services:
     ports:
       - "8888:8888"
     healthcheck:
-      test: ["CMD", "/lite-auth-proxy", "-healthcheck"]
+      test: ["CMD", "/flex-auth-proxy", "-healthcheck"]
       interval: 10s
       timeout: 3s
       retries: 5

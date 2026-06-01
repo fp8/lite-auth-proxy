@@ -3,11 +3,13 @@ package config
 import (
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 )
@@ -18,6 +20,15 @@ type Config struct {
 	Security SecurityConfig `toml:"security"`
 	Auth     AuthConfig     `toml:"auth"`
 	Admin    AdminConfig    `toml:"admin"`
+	Storage  StorageConfig  `toml:"storage"`
+}
+
+// StorageConfig contains settings for the persistent storage backend.
+type StorageConfig struct {
+	Enabled          bool   `toml:"enabled"`           // Enable persistent storage backend
+	ProjectID        string `toml:"project_id"`        // GCP project ID (defaults to GOOGLE_CLOUD_PROJECT)
+	Dbname           string `toml:"dbname"`            // Firestore database name (defaults to "(default)")
+	CollectionPrefix string `toml:"collection_prefix"` // Firestore collection prefix (default: "proxy")
 }
 
 // AdminConfig contains settings for the dynamic control-plane API.
@@ -402,6 +413,24 @@ func applyEnvOverrides(config *Config) error {
 	}
 	config.Auth.APIKey.Payload = applyJWTMapOverrides("PROXY_AUTH_API_KEY_PAYLOAD_", config.Auth.APIKey.Payload)
 
+	// Storage overrides
+	if val := os.Getenv("PROXY_STORAGE_ENABLED"); val != "" {
+		enabled, err := strconv.ParseBool(val)
+		if err != nil {
+			return fmt.Errorf("invalid PROXY_STORAGE_ENABLED: %w", err)
+		}
+		config.Storage.Enabled = enabled
+	}
+	if val := os.Getenv("PROXY_STORAGE_PROJECT_ID"); val != "" {
+		config.Storage.ProjectID = val
+	}
+	if val := os.Getenv("PROXY_STORAGE_DBNAME"); val != "" {
+		config.Storage.Dbname = val
+	}
+	if val := os.Getenv("PROXY_STORAGE_COLLECTION_PREFIX"); val != "" {
+		config.Storage.CollectionPrefix = val
+	}
+
 	// Admin overrides
 	if val := os.Getenv("PROXY_ADMIN_ENABLED"); val != "" {
 		enabled, err := strconv.ParseBool(val)
@@ -419,6 +448,8 @@ func applyEnvOverrides(config *Config) error {
 	if val := os.Getenv("PROXY_ADMIN_JWT_ALLOWED_EMAILS"); val != "" {
 		config.Admin.JWT.AllowedEmails = splitCSV(val)
 	}
+	config.Admin.JWT.Filters = applyJWTMapOverrides("PROXY_ADMIN_JWT_FILTERS_", config.Admin.JWT.Filters)
+	config.Admin.JWT.Mappings = applyJWTMapOverrides("PROXY_ADMIN_JWT_MAPPINGS_", config.Admin.JWT.Mappings)
 
 	return nil
 }
@@ -545,6 +576,11 @@ func setDefaults(config *Config) {
 		}
 	}
 
+	// Storage defaults
+	if config.Storage.CollectionPrefix == "" {
+		config.Storage.CollectionPrefix = "proxy"
+	}
+
 	// API Key defaults
 	if config.Auth.APIKey.Name == "" {
 		config.Auth.APIKey.Name = "X-API-KEY"
@@ -554,12 +590,16 @@ func setDefaults(config *Config) {
 	resolveGCPProjectID(config)
 }
 
+// GCPMetadataProjectURL is the metadata server endpoint for the GCP project ID.
+// Overridable in tests.
+var GCPMetadataProjectURL = "http://metadata.google.internal/computeMetadata/v1/project/project-id"
+
 // resolveGCPProjectID attempts to resolve GOOGLE_CLOUD_PROJECT from env or metadata server
 func resolveGCPProjectID(config *Config) {
 	projectID := os.Getenv("GOOGLE_CLOUD_PROJECT")
 	if projectID == "" {
 		// Try to fetch from GCP metadata server
-		projectID = fetchGCPProjectID()
+		projectID = FetchGCPProjectID()
 	}
 
 	// Replace placeholder in issuer and audience
@@ -569,34 +609,40 @@ func resolveGCPProjectID(config *Config) {
 	}
 }
 
-// fetchGCPProjectID fetches GOOGLE_CLOUD_PROJECT from the metadata server
-func fetchGCPProjectID() string {
-	client := &http.Client{
-		Timeout: 1 * 1e9, // 1 second timeout
-	}
-
-	req, err := http.NewRequest("GET", "http://metadata.google.internal/computeMetadata/v1/project/project-id", nil)
+// FetchGCPProjectID fetches the GCP project ID from the metadata server.
+// Returns an empty string if the server is unreachable or returns an error.
+// Used as a fallback when GOOGLE_CLOUD_PROJECT is not set in the environment.
+func FetchGCPProjectID() string {
+	slog.Default().Debug("GOOGLE_CLOUD_PROJECT not set; querying GCP Metadata Server", "url", GCPMetadataProjectURL)
+	client := &http.Client{Timeout: time.Second}
+	req, err := http.NewRequest(http.MethodGet, GCPMetadataProjectURL, nil)
 	if err != nil {
+		slog.Default().Warn("GCP Metadata Server: failed to build request", "error", err)
 		return ""
 	}
 	req.Header.Set("Metadata-Flavor", "Google")
-
 	resp, err := client.Do(req)
 	if err != nil {
+		slog.Default().Debug("GCP Metadata Server: not reachable", "error", err)
 		return ""
 	}
 	defer func() { _ = resp.Body.Close() }()
-
 	if resp.StatusCode != http.StatusOK {
+		slog.Default().Debug("GCP Metadata Server: unexpected status", "status", resp.StatusCode)
 		return ""
 	}
-
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
+		slog.Default().Warn("GCP Metadata Server: failed to read response", "error", err)
 		return ""
 	}
-
-	return strings.TrimSpace(string(body))
+	projectID := strings.TrimSpace(string(body))
+	if projectID != "" {
+		slog.Default().Info("GCP Metadata Server: resolved project ID", "project_id", projectID)
+	} else {
+		slog.Default().Warn("GCP Metadata Server: returned empty project ID")
+	}
+	return projectID
 }
 
 // validate checks that the configuration is valid
