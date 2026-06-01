@@ -8,9 +8,13 @@ Responsibilities:
     for local/remote targets.
 
 Tag conventions:
-  @flex-only   needs a flex build (API key, admin) — skipped on lite
+  @flex-only   needs a flex build (API key, admin, gRPC) — skipped on lite
   @local-only  needs the local rate-limit helper container — skipped remotely
   @jwt         needs a Firebase token — skipped if one can't be obtained
+  @grpc        needs the local grpc-transcoding proxy + grpc-echo backend —
+               skipped remotely (and on lite, via @flex-only)
+  @negative    drives a throwaway Docker stack to assert a boot failure —
+               needs a local Docker daemon and a built proxy image (PROXY_IMAGE)
 """
 
 import os
@@ -19,6 +23,7 @@ import sys
 # Make the proxylib package importable from step files (run dir is e2e/).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from proxylib.compose import docker_available  # noqa: E402
 from proxylib.config import Settings  # noqa: E402
 from proxylib.firebase import TokenError, login  # noqa: E402
 
@@ -55,6 +60,14 @@ def before_scenario(context, scenario):
 
     if "local-only" in tags and not s.rate_limit_base_url:
         scenario.skip("requires the local rate-limit helper container")
+        return
+
+    if "grpc" in tags and not s.grpc_base_url:
+        scenario.skip("requires the local grpc-transcoding proxy + grpc-echo backend")
+        return
+
+    if "negative" in tags and (not os.environ.get("PROXY_IMAGE") or not docker_available()):
+        scenario.skip("requires a local Docker daemon and a built proxy image (PROXY_IMAGE)")
         return
 
     if "jwt" in tags and not context.firebase_token:

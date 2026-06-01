@@ -7,11 +7,12 @@ import (
 	"io"
 	"log/slog"
 	"net"
-	"sync"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/fp8/lite-auth-proxy/internal/config"
 	"github.com/fp8/lite-auth-proxy/internal/proxy"
@@ -150,8 +151,9 @@ func registerTestProto(t *testing.T) *protoregistry.Files {
 }
 
 // startTestGRPCServer starts a gRPC server with reflection, health, and a dynamic
-// handler for the test.v1.Greeter service.
-func startTestGRPCServer(t *testing.T, noHealth bool) (string, func()) {
+// handler for the test.v1.Greeter service. noHealth/noReflection omit those
+// infrastructure services so the plugin's negative startup paths can be tested.
+func startTestGRPCServer(t *testing.T, noHealth, noReflection bool) (string, func()) {
 	t.Helper()
 
 	files := registerTestProto(t)
@@ -181,7 +183,9 @@ func startTestGRPCServer(t *testing.T, noHealth bool) (string, func()) {
 	srv.RegisterService(&svcDesc, &testGreeterServiceImpl{})
 
 	// Register reflection — this will include our service in service listing.
-	reflection.Register(srv)
+	if !noReflection {
+		reflection.Register(srv)
+	}
 
 	if !noHealth {
 		healthSrv := health.NewServer()
@@ -294,7 +298,7 @@ func echoLogic(ctx context.Context, req map[string]string, md metadata.MD) (map[
 // --- Tests ---
 
 func TestGRPCTranscodeConventionMode(t *testing.T) {
-	addr, stop := startTestGRPCServer(t, false)
+	addr, stop := startTestGRPCServer(t, false, false)
 	defer stop()
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -306,7 +310,7 @@ func TestGRPCTranscodeConventionMode(t *testing.T) {
 	cfg := &config.Config{
 		Server: config.ServerConfig{
 			Port:      0,
-			TargetURL: upstream.URL,
+			TargetURL: "http://" + addr,
 			HealthCheck: config.HealthCheck{
 				Path: "/healthz",
 			},
@@ -315,7 +319,6 @@ func TestGRPCTranscodeConventionMode(t *testing.T) {
 			Enabled:            true,
 			RouteMode:          "convention",
 			Reflection:         true,
-			ReflectionRefreshS: 300,
 			RequestTimeoutSecs: 5,
 			ForwardAuthHeaders: true,
 			Backends: []config.GRPCBackend{
@@ -334,6 +337,7 @@ func TestGRPCTranscodeConventionMode(t *testing.T) {
 
 	proxyServer := httptest.NewServer(handler)
 	defer proxyServer.Close()
+	waitReady(t, proxyServer.URL)
 
 	// Test 1: Convention mode call succeeds.
 	resp, respBody := doPost(t, proxyServer.URL+"/test.v1.Greeter/SayHello", `{"name": "world"}`)
@@ -344,13 +348,16 @@ func TestGRPCTranscodeConventionMode(t *testing.T) {
 		t.Errorf("expected greeting response, got: %s", respBody)
 	}
 
-	// Test 2: Unmatched path falls through to HTTP proxy.
+	// Test 2: Unmatched path is 404 (gRPC-only: no HTTP fall-through).
 	resp2, respBody2 := doGet(t, proxyServer.URL+"/unmatched/path")
-	if resp2.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200 fallthrough, got %d: %s", resp2.StatusCode, respBody2)
+	if resp2.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 for unmatched path, got %d: %s", resp2.StatusCode, respBody2)
 	}
-	if !strings.Contains(respBody2, "fallthrough") {
-		t.Errorf("expected fallthrough response, got: %s", respBody2)
+	if ct := resp2.Header.Get("Content-Type"); ct != "application/problem+json" {
+		t.Errorf("expected problem+json for 404, got %q", ct)
+	}
+	if strings.Contains(respBody2, "fallthrough") {
+		t.Errorf("unmatched path was proxied to the HTTP upstream; expected 404, got: %s", respBody2)
 	}
 
 	// Test 3: gRPC NOT_FOUND maps to HTTP 404.
@@ -371,7 +378,7 @@ func TestGRPCTranscodeConventionMode(t *testing.T) {
 }
 
 func TestGRPCTranscodeConventionModeWithBaseURL(t *testing.T) {
-	addr, stop := startTestGRPCServer(t, false)
+	addr, stop := startTestGRPCServer(t, false, false)
 	defer stop()
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -382,15 +389,14 @@ func TestGRPCTranscodeConventionModeWithBaseURL(t *testing.T) {
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{
-			Port:      0,
-			TargetURL: upstream.URL,
+			Port:        0,
+			TargetURL:   "http://" + addr,
 			HealthCheck: config.HealthCheck{Path: "/healthz"},
 		},
 		GRPC: config.GRPCConfig{
 			Enabled:            true,
 			RouteMode:          "convention",
 			Reflection:         true,
-			ReflectionRefreshS: 300,
 			RequestTimeoutSecs: 5,
 			ForwardAuthHeaders: true,
 			Backends: []config.GRPCBackend{
@@ -407,6 +413,7 @@ func TestGRPCTranscodeConventionModeWithBaseURL(t *testing.T) {
 
 	proxyServer := httptest.NewServer(handler)
 	defer proxyServer.Close()
+	waitReady(t, proxyServer.URL)
 
 	// Should work with base_url prefix.
 	resp, respBody := doPost(t, proxyServer.URL+"/myprefix/test.v1.Greeter/SayHello", `{"name": "world"}`)
@@ -417,13 +424,13 @@ func TestGRPCTranscodeConventionModeWithBaseURL(t *testing.T) {
 		t.Errorf("expected greeting, got: %s", respBody)
 	}
 
-	// Without prefix should fall through.
+	// Without the prefix the path doesn't match → 404 (no HTTP fall-through).
 	resp2, respBody2 := doPost(t, proxyServer.URL+"/test.v1.Greeter/SayHello", `{"name": "world"}`)
-	if resp2.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200 fallthrough, got %d", resp2.StatusCode)
+	if resp2.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 for unmatched (no prefix), got %d: %s", resp2.StatusCode, respBody2)
 	}
-	if !strings.Contains(respBody2, "fallthrough") {
-		t.Errorf("expected fallthrough, got: %s", respBody2)
+	if strings.Contains(respBody2, "fallthrough") {
+		t.Errorf("unmatched path was proxied to the HTTP upstream; expected 404, got: %s", respBody2)
 	}
 }
 
@@ -431,7 +438,7 @@ func TestGRPCTranscodeAuthHeaderForwarding(t *testing.T) {
 	// Auth headers (X-AUTH-*) are injected by the auth handler after
 	// HeaderSanitizer strips inbound ones. To test forwarding without
 	// full JWT setup, use a custom prefix that the sanitizer won't strip.
-	addr, stop := startTestGRPCServer(t, false)
+	addr, stop := startTestGRPCServer(t, false, false)
 	defer stop()
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -441,15 +448,14 @@ func TestGRPCTranscodeAuthHeaderForwarding(t *testing.T) {
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{
-			Port:      0,
-			TargetURL: upstream.URL,
+			Port:        0,
+			TargetURL:   "http://" + addr,
 			HealthCheck: config.HealthCheck{Path: "/healthz"},
 		},
 		GRPC: config.GRPCConfig{
 			Enabled:            true,
 			RouteMode:          "convention",
 			Reflection:         true,
-			ReflectionRefreshS: 300,
 			RequestTimeoutSecs: 5,
 			ForwardAuthHeaders: true,
 			Backends: []config.GRPCBackend{
@@ -470,6 +476,7 @@ func TestGRPCTranscodeAuthHeaderForwarding(t *testing.T) {
 
 	proxyServer := httptest.NewServer(handler)
 	defer proxyServer.Close()
+	waitReady(t, proxyServer.URL)
 
 	// Set X-FWD-USER-ID; sanitizer strips X-FWD-* but we inject it after.
 	// Actually, sanitizer strips them. Let's test a different way:
@@ -494,7 +501,7 @@ func TestGRPCTranscodeAuthHeaderForwarding(t *testing.T) {
 }
 
 func TestGRPCTranscodeMissingHealth(t *testing.T) {
-	addr, stop := startTestGRPCServer(t, true)
+	addr, stop := startTestGRPCServer(t, true, false)
 	defer stop()
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -504,15 +511,14 @@ func TestGRPCTranscodeMissingHealth(t *testing.T) {
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{
-			Port:      0,
-			TargetURL: upstream.URL,
+			Port:        0,
+			TargetURL:   "http://" + addr,
 			HealthCheck: config.HealthCheck{Path: "/healthz"},
 		},
 		GRPC: config.GRPCConfig{
 			Enabled:            true,
 			RouteMode:          "convention",
 			Reflection:         true,
-			ReflectionRefreshS: 300,
 			RequestTimeoutSecs: 5,
 			Backends: []config.GRPCBackend{
 				{Address: addr},
@@ -521,19 +527,24 @@ func TestGRPCTranscodeMissingHealth(t *testing.T) {
 		Auth: config.AuthConfig{HeaderPrefix: "X-AUTH-"},
 	}
 
-	_, err := proxy.NewHandler(cfg, slog.Default())
-	if err == nil {
-		t.Fatal("expected error for missing health check, got nil")
+	// Boot must NOT fail just because the backend lacks a health service — in a
+	// sidecar the backend may simply not be up yet. The proxy starts and
+	// surfaces the problem through /healthz instead.
+	handler, err := proxy.NewHandler(cfg, slog.Default())
+	if err != nil {
+		t.Fatalf("NewHandler must not fail when a backend is unhealthy: %v", err)
 	}
-	if !strings.Contains(err.Error(), "health") {
-		t.Errorf("expected health-related error, got: %v", err)
-	}
+	proxyServer := httptest.NewServer(handler)
+	defer proxyServer.Close()
+
+	waitUnhealthy(t, proxyServer.URL, "health")
 }
 
-func TestGRPCTranscodeMultiServiceBackend(t *testing.T) {
-	// The test server exposes two methods under one service;
-	// verify both are discovered and routable.
-	addr, stop := startTestGRPCServer(t, false)
+func TestGRPCTranscodeMissingReflection(t *testing.T) {
+	// Backend has health but no server reflection: the plugin passes the health
+	// probe, then cannot discover services. The proxy must still boot and report
+	// the problem through /healthz rather than crashing.
+	addr, stop := startTestGRPCServer(t, false, true)
 	defer stop()
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -543,15 +554,53 @@ func TestGRPCTranscodeMultiServiceBackend(t *testing.T) {
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{
-			Port:      0,
-			TargetURL: upstream.URL,
+			Port:        0,
+			TargetURL:   "http://" + addr,
 			HealthCheck: config.HealthCheck{Path: "/healthz"},
 		},
 		GRPC: config.GRPCConfig{
 			Enabled:            true,
 			RouteMode:          "convention",
 			Reflection:         true,
-			ReflectionRefreshS: 300,
+			RequestTimeoutSecs: 5,
+			Backends: []config.GRPCBackend{
+				{Address: addr},
+			},
+		},
+		Auth: config.AuthConfig{HeaderPrefix: "X-AUTH-"},
+	}
+
+	handler, err := proxy.NewHandler(cfg, slog.Default())
+	if err != nil {
+		t.Fatalf("NewHandler must not fail when a backend lacks reflection: %v", err)
+	}
+	proxyServer := httptest.NewServer(handler)
+	defer proxyServer.Close()
+
+	waitUnhealthy(t, proxyServer.URL, "reflection")
+}
+
+func TestGRPCTranscodeMultiServiceBackend(t *testing.T) {
+	// The test server exposes two methods under one service;
+	// verify both are discovered and routable.
+	addr, stop := startTestGRPCServer(t, false, false)
+	defer stop()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{
+			Port:        0,
+			TargetURL:   "http://" + addr,
+			HealthCheck: config.HealthCheck{Path: "/healthz"},
+		},
+		GRPC: config.GRPCConfig{
+			Enabled:            true,
+			RouteMode:          "convention",
+			Reflection:         true,
 			RequestTimeoutSecs: 5,
 			ForwardAuthHeaders: true,
 			Backends: []config.GRPCBackend{
@@ -568,6 +617,7 @@ func TestGRPCTranscodeMultiServiceBackend(t *testing.T) {
 
 	proxyServer := httptest.NewServer(handler)
 	defer proxyServer.Close()
+	waitReady(t, proxyServer.URL)
 
 	// SayHello method.
 	resp1, body1 := doPost(t, proxyServer.URL+"/test.v1.Greeter/SayHello", `{"name": "Alice"}`)
@@ -583,6 +633,233 @@ func TestGRPCTranscodeMultiServiceBackend(t *testing.T) {
 	if !strings.Contains(body2, "ping") {
 		t.Errorf("Echo: expected 'ping' in response, got: %s", body2)
 	}
+}
+
+func TestGRPCTranscodeLazyDiscoveryWithoutHealthz(t *testing.T) {
+	// The transcoding endpoint must work even if /healthz is NEVER called: the
+	// first request bootstraps discovery on the request path. (Regression guard:
+	// discovery used to be triggered only by the health endpoint.)
+	addr, stop := startTestGRPCServer(t, false, false)
+	defer stop()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{
+			Port:        0,
+			TargetURL:   "http://" + addr,
+			HealthCheck: config.HealthCheck{Path: "/healthz"},
+		},
+		GRPC: config.GRPCConfig{
+			Enabled:            true,
+			RouteMode:          "convention",
+			Reflection:         true,
+			RequestTimeoutSecs: 5,
+			Backends:           []config.GRPCBackend{{Address: addr}},
+		},
+		Auth: config.AuthConfig{HeaderPrefix: "X-AUTH-"},
+	}
+
+	handler, err := proxy.NewHandler(cfg, slog.Default())
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+	proxyServer := httptest.NewServer(handler)
+	defer proxyServer.Close()
+
+	// Deliberately do NOT poll /healthz. The first request must transcode.
+	resp, body := doPost(t, proxyServer.URL+"/test.v1.Greeter/SayHello", `{"name": "world"}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 from lazy discovery (no /healthz), got %d: %s", resp.StatusCode, body)
+	}
+	if !strings.Contains(body, "Hello, world") {
+		t.Errorf("expected greeting, got: %s", body)
+	}
+}
+
+func TestGRPCTranscodeHealthIgnoresHTTPTarget(t *testing.T) {
+	// When gRPC transcoding is enabled, /healthz must be driven by the gRPC
+	// backend health check — NOT proxied to server.health_check.target.
+	addr, stop := startTestGRPCServer(t, false, false)
+	defer stop()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	// An HTTP health target that, if (wrongly) used, marks the response distinctly.
+	healthTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTeapot)
+		_, _ = w.Write([]byte(`{"status":"from-http-target"}`))
+	}))
+	defer healthTarget.Close()
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{
+			Port:        0,
+			TargetURL:   "http://" + addr,
+			HealthCheck: config.HealthCheck{Path: "/healthz", Target: healthTarget.URL},
+		},
+		GRPC: config.GRPCConfig{
+			Enabled:            true,
+			RouteMode:          "convention",
+			Reflection:         true,
+			RequestTimeoutSecs: 5,
+			Backends:           []config.GRPCBackend{{Address: addr}},
+		},
+		Auth: config.AuthConfig{HeaderPrefix: "X-AUTH-"},
+	}
+
+	handler, err := proxy.NewHandler(cfg, slog.Default())
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+	proxyServer := httptest.NewServer(handler)
+	defer proxyServer.Close()
+	waitReady(t, proxyServer.URL) // becomes 200 only via gRPC readiness
+
+	resp, body := doGet(t, proxyServer.URL+"/healthz")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected gRPC-driven 200, got %d: %s", resp.StatusCode, body)
+	}
+	if strings.Contains(body, "from-http-target") {
+		t.Errorf("health was proxied to the HTTP target; expected gRPC-driven response, got: %s", body)
+	}
+}
+
+func TestGRPCTranscodeUsesServerTargetURL(t *testing.T) {
+	// The common case: only grpc.enabled=true, no [[grpc.backends]]. The gRPC
+	// backend is derived from server.target_url.
+	addr, stop := startTestGRPCServer(t, false, false)
+	defer stop()
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{
+			Port:        0,
+			TargetURL:   "http://" + addr, // <- the gRPC backend, no [[grpc.backends]]
+			HealthCheck: config.HealthCheck{Path: "/healthz"},
+		},
+		GRPC: config.GRPCConfig{
+			Enabled:            true,
+			RouteMode:          "convention",
+			Reflection:         true,
+			RequestTimeoutSecs: 5,
+			// Backends deliberately empty.
+		},
+		Auth: config.AuthConfig{HeaderPrefix: "X-AUTH-"},
+	}
+
+	handler, err := proxy.NewHandler(cfg, slog.Default())
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+	proxyServer := httptest.NewServer(handler)
+	defer proxyServer.Close()
+	waitReady(t, proxyServer.URL)
+
+	resp, body := doPost(t, proxyServer.URL+"/test.v1.Greeter/SayHello", `{"name": "world"}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 transcoding via server.target_url, got %d: %s", resp.StatusCode, body)
+	}
+	if !strings.Contains(body, "Hello, world") {
+		t.Errorf("expected greeting, got: %s", body)
+	}
+}
+
+func TestGRPCTranscodeBackendsMustIncludeTargetURL(t *testing.T) {
+	// When explicit [[grpc.backends]] are given, server.target_url must be one of
+	// them — otherwise the config is contradictory and boot fails.
+	cfg := &config.Config{
+		Server: config.ServerConfig{
+			Port:        0,
+			TargetURL:   "http://127.0.0.1:1", // not among the backends below
+			HealthCheck: config.HealthCheck{Path: "/healthz"},
+		},
+		GRPC: config.GRPCConfig{
+			Enabled:            true,
+			RouteMode:          "convention",
+			Reflection:         true,
+			RequestTimeoutSecs: 5,
+			Backends:           []config.GRPCBackend{{Address: "some-service:50051"}},
+		},
+		Auth: config.AuthConfig{HeaderPrefix: "X-AUTH-"},
+	}
+
+	_, err := proxy.NewHandler(cfg, slog.Default())
+	if err == nil {
+		t.Fatal("expected boot to fail when server.target_url is not among [[grpc.backends]]")
+	}
+	if !strings.Contains(err.Error(), "must also be one of the") {
+		t.Errorf("expected a target_url/backends mismatch error, got: %v", err)
+	}
+}
+
+func multiBackendConfig(t *testing.T, addr1, addr2 string) *config.Config {
+	t.Helper()
+	return &config.Config{
+		Server: config.ServerConfig{
+			Port:        0,
+			TargetURL:   "http://" + addr1, // must be one of the backends
+			HealthCheck: config.HealthCheck{Path: "/healthz"},
+		},
+		GRPC: config.GRPCConfig{
+			Enabled:            true,
+			RouteMode:          "convention",
+			Reflection:         true,
+			RequestTimeoutSecs: 5,
+			Backends: []config.GRPCBackend{
+				{Address: addr1, BaseURL: "a"}, // base_url namespaces the (identical) services
+				{Address: addr2, BaseURL: "b"},
+			},
+		},
+		Auth: config.AuthConfig{HeaderPrefix: "X-AUTH-"},
+	}
+}
+
+func TestGRPCTranscodeMultipleBackendsAllHealthy(t *testing.T) {
+	// /healthz returns 200 only when every backend is healthy; both backends'
+	// routes are reachable.
+	addr1, stop1 := startTestGRPCServer(t, false, false)
+	defer stop1()
+	addr2, stop2 := startTestGRPCServer(t, false, false)
+	defer stop2()
+
+	handler, err := proxy.NewHandler(multiBackendConfig(t, addr1, addr2), slog.Default())
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+	proxyServer := httptest.NewServer(handler)
+	defer proxyServer.Close()
+	waitReady(t, proxyServer.URL) // 200 requires BOTH backends healthy + discovered
+
+	for _, prefix := range []string{"a", "b"} {
+		resp, body := doPost(t, proxyServer.URL+"/"+prefix+"/test.v1.Greeter/SayHello", `{"name": "world"}`)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("backend %q: expected 200, got %d: %s", prefix, resp.StatusCode, body)
+		}
+	}
+}
+
+func TestGRPCTranscodeMultipleBackendsOneUnhealthy(t *testing.T) {
+	// If ANY backend fails its health check, /healthz must report 503 and name it.
+	addr1, stop1 := startTestGRPCServer(t, false, false) // healthy
+	defer stop1()
+	addr2, stop2 := startTestGRPCServer(t, true, false) // no health service
+	defer stop2()
+
+	handler, err := proxy.NewHandler(multiBackendConfig(t, addr1, addr2), slog.Default())
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+	proxyServer := httptest.NewServer(handler)
+	defer proxyServer.Close()
+
+	// addr2 is unhealthy, so /healthz never reaches 200 — it reports 503 naming addr2.
+	waitUnhealthy(t, proxyServer.URL, addr2)
 }
 
 // --- HTTP helpers ---
@@ -607,6 +884,48 @@ func doGet(t *testing.T, url string) (*http.Response, string) {
 	b, _ := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
 	return resp, string(b)
+}
+
+// waitReady blocks until /healthz returns 200 (backend discovered) or fails.
+// Backend discovery now runs in the background, so tests must wait for the
+// route table to be populated before issuing transcoded requests.
+func waitReady(t *testing.T, baseURL string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		resp, err := http.Get(baseURL + "/healthz")
+		if err == nil {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("proxy did not become ready (healthz never returned 200)")
+}
+
+// waitUnhealthy blocks until /healthz returns 503 with a body containing
+// mustContain, or fails. Used by the negative tests: the proxy must boot and
+// stay up, surfacing the broken backend through its health endpoint.
+func waitUnhealthy(t *testing.T, baseURL, mustContain string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	var last string
+	for time.Now().Before(deadline) {
+		resp, err := http.Get(baseURL + "/healthz")
+		if err == nil {
+			b, _ := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			last = string(b)
+			if resp.StatusCode == http.StatusServiceUnavailable && strings.Contains(last, mustContain) {
+				return
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("expected /healthz to report unavailable mentioning %q; last body: %s", mustContain, last)
 }
 
 // Suppress unused import warnings.

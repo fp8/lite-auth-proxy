@@ -29,7 +29,6 @@ type GRPCConfig struct {
 	Enabled             bool          `toml:"enabled"`
 	RouteMode           string        `toml:"route_mode"`
 	Reflection          bool          `toml:"reflection"`
-	ReflectionRefreshS  int           `toml:"reflection_refresh_secs"`
 	DescriptorSetPath   string        `toml:"descriptor_set_path"`
 	RequestTimeoutSecs  int           `toml:"request_timeout_secs"`
 	ForwardAuthHeaders  bool          `toml:"forward_auth_headers"`
@@ -491,13 +490,6 @@ func applyEnvOverrides(config *Config) error {
 		}
 		config.GRPC.Reflection = enabled
 	}
-	if val := os.Getenv("PROXY_GRPC_REFLECTION_REFRESH_SECS"); val != "" {
-		secs, err := strconv.Atoi(val)
-		if err != nil {
-			return fmt.Errorf("invalid PROXY_GRPC_REFLECTION_REFRESH_SECS: %w", err)
-		}
-		config.GRPC.ReflectionRefreshS = secs
-	}
 	if val := os.Getenv("PROXY_GRPC_DESCRIPTOR_SET_PATH"); val != "" {
 		config.GRPC.DescriptorSetPath = val
 	}
@@ -701,9 +693,6 @@ func setDefaults(config *Config) {
 	}
 	if config.GRPC.Enabled && !config.GRPC.Reflection && config.GRPC.DescriptorSetPath == "" {
 		config.GRPC.Reflection = true
-	}
-	if config.GRPC.ReflectionRefreshS == 0 {
-		config.GRPC.ReflectionRefreshS = 300
 	}
 	if config.GRPC.RequestTimeoutSecs == 0 {
 		config.GRPC.RequestTimeoutSecs = 30

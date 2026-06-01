@@ -9,6 +9,7 @@
 - Behavior:
   - Local mode (default): returns `200 OK` with `{"status":"ok"}`
   - Proxy mode: forwards to `server.health_check.target` and returns its status/body
+  - gRPC transcoding mode (`grpc.enabled`): returns `200 {"status":"ok"}` only when every gRPC backend passes a live `grpc.health.v1.Health` check (and has been discovered), else `503 {"status":"unavailable","errors":[…]}`. This gRPC check is authoritative — `server.health_check.target` is ignored. See [GRPC-TRANSCODING.md](GRPC-TRANSCODING.md#startup--readiness-health-check-driven).
 
 ---
 

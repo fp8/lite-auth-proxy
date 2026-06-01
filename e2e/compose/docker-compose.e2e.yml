@@ -1,16 +1,22 @@
 # End-to-end test stack.
 #
-#   echo      — a request-reflecting upstream (so we can assert which headers
-#               the proxy injected before forwarding).
-#   proxy     — the image under test, configured the way a real deployment is:
-#               JWT auth on, generous rate limit (so it never interferes with
-#               the auth scenarios). API-key + admin are toggled on for flex.
-#   proxy-rl  — the SAME image, but configured purely as a rate limiter with a
-#               tiny limit, used only by the rate-limiting feature so its
-#               IP-ban side effects stay isolated from everything else.
+#   echo       — a request-reflecting upstream (so we can assert which headers
+#                the proxy injected before forwarding).
+#   proxy      — the image under test, configured the way a real deployment is:
+#                JWT auth on, generous rate limit (so it never interferes with
+#                the auth scenarios). API-key + admin are toggled on for flex.
+#   proxy-rl   — the SAME image, but configured purely as a rate limiter with a
+#                tiny limit, used only by the rate-limiting feature so its
+#                IP-ban side effects stay isolated from everything else.
+#   grpc-echo  — a tiny real gRPC backend (server reflection + health) used by
+#                the gRPC-transcoding feature. Built from Dockerfile.grpcecho.
+#   proxy-grpc — the SAME image as `proxy`, configured with the gRPC-transcoding
+#                plugin pointed at grpc-echo. Convention-mode routes; a path that
+#                matches no gRPC method returns 404 (gRPC-only: no HTTP
+#                fall-through). flex-only.
 #
-# All knobs are env-var overrides (PROXY_*), so nothing needs to be rebuilt or
-# mounted. run.sh sets PROXY_IMAGE and the flex/lite toggles.
+# All proxy knobs are env-var overrides (PROXY_*), so nothing needs to be
+# rebuilt or mounted. run.sh sets PROXY_IMAGE and the flex/lite toggles.
 
 services:
   echo:
@@ -19,6 +25,14 @@ services:
       HTTP_PORT: "8080"
     expose:
       - "8080"
+
+  grpc-echo:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.grpcecho
+    command: ["-addr", ":50051"]
+    expose:
+      - "50051"
 
   proxy:
     image: ${PROXY_IMAGE}
@@ -60,4 +74,29 @@ services:
       PROXY_SECURITY_RATE_LIMIT_ENABLED: "true"
       PROXY_SECURITY_RATE_LIMIT_REQUESTS_PER_MIN: "3"
       PROXY_SECURITY_RATE_LIMIT_BAN_FOR_MIN: "1"
+      PROXY_LOG_MODE: ${PROXY_LOG_MODE:-development}
+
+  proxy-grpc:
+    image: ${PROXY_IMAGE}
+    depends_on:
+      - grpc-echo
+    ports:
+      - "${E2E_GRPC_PORT:-8890}:8888"
+    environment:
+      GOOGLE_CLOUD_PROJECT: fp8devel
+      # The gRPC backend IS server.target_url — the common config needs only
+      # grpc.enabled=true (no [[grpc.backends]]). The scheme informs TLS only;
+      # the gRPC dial uses host:port.
+      PROXY_SERVER_TARGET_URL: http://grpc-echo:50051
+      # Auth/rate-limit off so the gRPC scenarios are deterministic and the
+      # transcoding behaviour is isolated. (The gRPC plugin is flex-only, so
+      # these scenarios are tagged @flex-only and skip on the lite image.)
+      PROXY_AUTH_JWT_ENABLED: "false"
+      PROXY_AUTH_API_KEY_ENABLED: "false"
+      PROXY_ADMIN_ENABLED: "false"
+      PROXY_SECURITY_RATE_LIMIT_ENABLED: "false"
+      # gRPC transcoding: discover greeter.v1.Greeter via reflection and expose
+      # its unary methods as POST /<pkg>.<Service>/<Method>.
+      PROXY_GRPC_ENABLED: "true"
+      PROXY_GRPC_ROUTE_MODE: convention
       PROXY_LOG_MODE: ${PROXY_LOG_MODE:-development}

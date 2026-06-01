@@ -1,0 +1,43 @@
+# Negative gRPC-transcoding stack.
+#
+# The proxy must NOT crash when a gRPC backend lacks health checking or server
+# reflection (in a sidecar the backend may simply be slow to come up). Instead
+# it boots, serves /healthz, and reports the backend as not-ready there. These
+# scenarios stand up a deliberately broken backend and assert that the proxy
+# stays up but /healthz returns 503 naming what is wrong.
+#
+# Run on its own project name and published port; the degraded backend mode is
+# selected via env vars consumed by grpc-echo:
+#   GRPC_ECHO_NO_HEALTH=1      → backend serves reflection but no health service
+#   GRPC_ECHO_NO_REFLECTION=1  → backend serves health but no reflection
+
+services:
+  grpc-echo-neg:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.grpcecho
+    command: ["-addr", ":50051"]
+    environment:
+      GRPC_ECHO_NO_HEALTH: ${GRPC_ECHO_NO_HEALTH:-}
+      GRPC_ECHO_NO_REFLECTION: ${GRPC_ECHO_NO_REFLECTION:-}
+    expose:
+      - "50051"
+
+  proxy-grpc-neg:
+    image: ${PROXY_IMAGE}
+    restart: "no"
+    depends_on:
+      - grpc-echo-neg
+    ports:
+      - "${E2E_GRPC_NEG_PORT:-8896}:8888"
+    environment:
+      GOOGLE_CLOUD_PROJECT: fp8devel
+      # The gRPC backend is server.target_url (no [[grpc.backends]]).
+      PROXY_SERVER_TARGET_URL: http://grpc-echo-neg:50051
+      PROXY_AUTH_JWT_ENABLED: "false"
+      PROXY_AUTH_API_KEY_ENABLED: "false"
+      PROXY_ADMIN_ENABLED: "false"
+      PROXY_SECURITY_RATE_LIMIT_ENABLED: "false"
+      PROXY_GRPC_ENABLED: "true"
+      PROXY_GRPC_ROUTE_MODE: convention
+      PROXY_LOG_MODE: ${PROXY_LOG_MODE:-development}

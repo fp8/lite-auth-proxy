@@ -31,6 +31,16 @@ Scenario: A request with a valid API key is allowed through
 | `apikey_auth.feature` | A valid API key is accepted; a wrong one is rejected | flex build |
 | `rate_limiting.feature` | A flood of requests is turned away with HTTP 429 | local only |
 | `admin.feature` | The admin control plane refuses unauthenticated calls | flex build |
+| `grpc_transcoding.feature` | REST/JSON is transcoded to gRPC and back; errors map to problem+json | flex build, local only |
+| `grpc_negative.feature` | The proxy stays up and reports via `/healthz` (503) when a gRPC backend lacks health or reflection | flex build, local Docker |
+
+The gRPC scenarios run against a dedicated `proxy-grpc` instance (gRPC plugin
+enabled) sitting in front of a small real gRPC backend, `grpc-echo` (built from
+`Dockerfile.grpcecho`). Both are started automatically by `run.sh` for the local
+profile. The **negative** scenarios additionally spin up a throwaway stack
+(`compose/docker-compose.grpc-negative.yml`) with a deliberately broken backend
+and assert that the proxy stays up and reports the problem via `/healthz` (503) —
+so they need a local Docker daemon and self-skip otherwise.
 
 Scenarios automatically **skip themselves** when their prerequisites aren't met
 (e.g. API-key scenarios are skipped against a lite image), so the same files work
@@ -143,3 +153,6 @@ e2e/
   compose/             # the docker-compose stack used by the local profile
   run.sh               # the one command you run
 ```
+
+The `grpc-echo` backend used by the gRPC scenarios is built from
+`Dockerfile.grpcecho` at the repo root (source: `cmd/grpc-echo`).

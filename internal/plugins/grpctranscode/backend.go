@@ -3,6 +3,8 @@ package grpctranscode
 import (
 	"context"
 	"fmt"
+	"sync"
+	"time"
 
 	"github.com/fp8/lite-auth-proxy/internal/config"
 	"google.golang.org/grpc"
@@ -11,10 +13,63 @@ import (
 )
 
 // backendConn represents a gRPC connection to a single upstream backend.
+//
+// Readiness (ready/lastErr) is tracked separately from the connection because
+// the backend may not be reachable when the proxy boots — discovery runs in the
+// background and updates this state, which the proxy's /healthz surfaces. The
+// state is guarded by stateMu for concurrent reads from the health handler.
 type backendConn struct {
 	address string
 	baseURL string
 	conn    *grpc.ClientConn
+
+	// discovered (guarded by discoverMu) records that reflection has run and the
+	// backend's routes are installed. Discovery happens once, on the first
+	// SERVING health check, and is cached for the process lifetime.
+	discoverMu sync.Mutex
+	discovered bool
+
+	// lastProbeAt (guarded by probeMu) throttles and de-duplicates request-path
+	// probes so a not-yet-discovered backend isn't probed on every request.
+	probeMu     sync.Mutex
+	lastProbeAt time.Time
+
+	// ready/lastErr (guarded by stateMu) is the last-known readiness, updated by
+	// each probe and read by the request path to short-circuit calls to a
+	// not-ready backend.
+	stateMu sync.RWMutex
+	ready   bool
+	lastErr error
+}
+
+// isDiscovered reports whether the backend's routes have been installed.
+func (b *backendConn) isDiscovered() bool {
+	b.discoverMu.Lock()
+	defer b.discoverMu.Unlock()
+	return b.discovered
+}
+
+// setReady marks the backend as ready and clears any recorded error.
+func (b *backendConn) setReady() {
+	b.stateMu.Lock()
+	b.ready = true
+	b.lastErr = nil
+	b.stateMu.Unlock()
+}
+
+// setError records why the backend is not (yet) usable and marks it not ready.
+func (b *backendConn) setError(err error) {
+	b.stateMu.Lock()
+	b.ready = false
+	b.lastErr = err
+	b.stateMu.Unlock()
+}
+
+// status returns the current readiness and last error.
+func (b *backendConn) status() (bool, error) {
+	b.stateMu.RLock()
+	defer b.stateMu.RUnlock()
+	return b.ready, b.lastErr
 }
 
 // dialBackend establishes a gRPC connection to a backend.

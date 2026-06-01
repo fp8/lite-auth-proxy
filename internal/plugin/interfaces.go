@@ -81,6 +81,18 @@ type Stopper interface {
 	Stop() error
 }
 
+// ReadinessReporter is an optional interface a plugin can implement to
+// contribute to the proxy's /healthz readiness. Ready returns nil when the
+// plugin is healthy, or an error describing why it is not yet ready. It is
+// polled on every health-check request, so it must be cheap and safe for
+// concurrent use. A plugin that does background startup work (e.g. waiting for
+// a slow upstream) uses this to keep the proxy serving /healthz while
+// signalling that it is not yet ready, instead of failing the process at boot.
+type ReadinessReporter interface {
+	Plugin
+	Ready() error
+}
+
 // Deps is the shared context that the core passes to plugins during initialization.
 type Deps struct {
 	Config        *config.Config

@@ -107,14 +107,18 @@ case "$profile" in
     trap cleanup EXIT
 
     echo "[run] starting stack ..."
-    docker compose -f "$COMPOSE" -p "$PROJECT" up -d --remove-orphans
+    # --build keeps the locally-built grpc-echo helper image (the only service
+    # with a build context) in sync with the source on every run.
+    docker compose -f "$COMPOSE" -p "$PROJECT" up -d --build --remove-orphans
 
     wait_for_health "http://localhost:8888/healthz" "proxy"
     wait_for_health "http://localhost:8889/healthz" "rate-limit proxy"
+    wait_for_health "http://localhost:8890/healthz" "grpc-transcoding proxy"
 
     export E2E_BUILD="$variant"
     export E2E_BASE_URL="http://localhost:8888"
     export E2E_RL_BASE_URL="http://localhost:8889"
+    export E2E_GRPC_BASE_URL="http://localhost:8890"
     run_behave "$@"
     ;;
 

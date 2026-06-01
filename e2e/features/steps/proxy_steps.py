@@ -12,6 +12,8 @@ token" stay distinct.
 import requests
 from behave import given, then, use_step_matcher, when
 
+from proxylib.compose import docker_available, probe_degraded_proxy
+
 use_step_matcher("re")
 
 DEFAULT_TIMEOUT = 15
@@ -29,6 +31,12 @@ def step_proxy_running(context):
 @given(r"the rate-limit proxy is running")
 def step_rl_proxy_running(context):
     context.target_url = context.settings.rate_limit_base_url
+    context.headers = {}
+
+
+@given(r"the grpc-transcoding proxy is running")
+def step_grpc_proxy_running(context):
+    context.target_url = context.settings.grpc_base_url
     context.headers = {}
 
 
@@ -80,6 +88,18 @@ def step_send_invalid_apikey(context, path):
 def step_post_no_creds(context, path):
     url = context.target_url.rstrip("/") + path
     context.response = requests.post(url, json={}, timeout=DEFAULT_TIMEOUT)
+
+
+@when(r"I POST JSON '(?P<body>.*)' to \"(?P<path>[^\"]*)\"")
+def step_post_json(context, body, path):
+    # `body` is sent verbatim as the request payload (the proxy/transcoder is
+    # responsible for parsing it), with an explicit JSON content type.
+    url = context.target_url.rstrip("/") + path
+    headers = dict(context.headers)
+    headers["Content-Type"] = "application/json"
+    context.response = requests.post(
+        url, data=body.encode("utf-8"), headers=headers, timeout=DEFAULT_TIMEOUT
+    )
 
 
 @when(r'I send (?P<count>\d+) requests in quick succession to "(?P<path>[^"]*)"')
@@ -141,6 +161,16 @@ def step_upstream_header_logged_in_user(context, name):
     )
 
 
+@then(r'the response content type should be "(?P<value>[^"]*)"')
+def step_response_content_type(context, value):
+    # Compare the media type only, ignoring any "; charset=..." suffix.
+    actual = context.response.headers.get("Content-Type", "").split(";")[0].strip()
+    assert actual == value, (
+        f'expected Content-Type "{value}" but got '
+        f'"{context.response.headers.get("Content-Type")}"'
+    )
+
+
 @then(r'the response header "(?P<name>[^"]*)" should be present')
 def step_response_header_present(context, name):
     assert name in context.response.headers, (
@@ -165,4 +195,46 @@ def step_last_429_error(context, value):
     assert "Retry-After" in last.headers, "429 response missing Retry-After header"
     assert last.json().get("error") == value, (
         f'expected error "{value}", got "{last.json().get("error")}"'
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Negative gRPC startup — a broken backend must be reported via /healthz, not
+# crash the proxy. Drive a throwaway stack and probe its health endpoint.
+# --------------------------------------------------------------------------- #
+@given(r"a gRPC backend that is missing its health check")
+def step_backend_no_health(context):
+    context.grpc_neg_mode = "no-health"
+
+
+@given(r"a gRPC backend that is missing its server reflection")
+def step_backend_no_reflection(context):
+    context.grpc_neg_mode = "no-reflection"
+
+
+@when(r"the gRPC-transcoding proxy starts against that backend")
+def step_start_degraded_proxy(context):
+    assert docker_available(), "docker is required for @negative scenarios"
+    context.health = probe_degraded_proxy(context.grpc_neg_mode)
+
+
+@then(r"the proxy should still be serving its health endpoint")
+def step_proxy_still_serving(context):
+    assert context.health.reachable, (
+        "expected the proxy to stay up and serve /healthz, but it was never reachable"
+    )
+
+
+@then(r"the health endpoint should report status (?P<code>\d+)")
+def step_health_status(context, code):
+    assert context.health.status == int(code), (
+        f"expected /healthz status {code}, got {context.health.status}.\n"
+        f"body: {context.health.body[:400]}"
+    )
+
+
+@then(r'the health endpoint error should mention "(?P<text>[^"]*)"')
+def step_health_error_mentions(context, text):
+    assert text.lower() in context.health.body.lower(), (
+        f'expected /healthz body to mention "{text}".\nbody: {context.health.body[:400]}'
     )

@@ -1,0 +1,31 @@
+# grpc-echo — a tiny self-contained gRPC backend used only by the end-to-end
+# test stack to exercise the gRPC-transcoding plugin (see cmd/grpc-echo). It is
+# NOT a shipped artifact; it has no place in a real deployment.
+#
+# -- Build stage --
+FROM golang:1.24-trixie AS builder
+
+WORKDIR /app
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+# Cross-compilation target — populated automatically by BuildKit per platform.
+ARG TARGETOS
+ARG TARGETARCH
+
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
+    -ldflags="-s -w" \
+    -o /grpc-echo ./cmd/grpc-echo
+
+# -- Runtime stage --
+FROM gcr.io/distroless/static-debian13:nonroot
+
+COPY --from=builder /grpc-echo /grpc-echo
+
+# Default gRPC port (overridable via -addr / GRPC_ECHO_ADDR).
+EXPOSE 50051
+
+ENTRYPOINT ["/grpc-echo"]

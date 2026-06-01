@@ -28,6 +28,10 @@ class Settings:
     # the rate-limiting feature. None when not available (e.g. remote profile),
     # in which case @local-only scenarios are skipped.
     rate_limit_base_url: str | None
+    # A proxy instance with the gRPC-transcoding plugin enabled, pointed at the
+    # grpc-echo backend. None when not available (e.g. remote profile), in which
+    # case @grpc scenarios are skipped.
+    grpc_base_url: str | None
     # Which image variant is under test: "flex" (all plugins) or "lite".
     build: str
 
@@ -53,6 +57,7 @@ class Settings:
         return cls(
             base_url=_env("E2E_BASE_URL", "http://localhost:8888"),
             rate_limit_base_url=_env("E2E_RL_BASE_URL"),
+            grpc_base_url=_env("E2E_GRPC_BASE_URL"),
             build=(_env("E2E_BUILD", "flex") or "flex").lower(),
             api_key=_env("E2E_API_KEY", "test-api-key-123456"),
             api_key_header=_env("E2E_API_KEY_HEADER", "X-API-KEY"),

@@ -111,6 +111,7 @@ flowchart TD
 ## Documentation
 
 - **[Plugin Guide](docs/PLUGINS.md)** — Build variants, plugin configuration, custom builds, and plugin development
+- **[gRPC Transcoding](docs/GRPC-TRANSCODING.md)** — How REST/JSON ↔ gRPC transcoding works, route modes, and running a gRPC backend locally
 - **[Configuration Guide](docs/CONFIGURATION.md)** — Core configuration reference, cross-plugin scenarios, and config validation
 - **[Rate Limiting Guide](docs/RATE-LIMITING.md)** — Per-IP, per-API-key, and per-JWT rate limiting, throttle delay, and dynamic rules
 - **[Admin Control Plane](docs/ADMIN.md)** — Runtime traffic management, rule lifecycle, and serverless caveats

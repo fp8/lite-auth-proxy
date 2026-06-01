@@ -271,20 +271,36 @@ enabled = false                      # Enable persistent storage backend (Firest
 
 Transcodes inbound REST/JSON requests to unary gRPC calls on upstream backends, and gRPC responses back to JSON. Fully generic: learns services, methods, message schemas, and REST mappings at runtime via gRPC server reflection. No per-service code stubs and no transcoding config files.
 
+> See **[docs/GRPC-TRANSCODING.md](GRPC-TRANSCODING.md)** for how the implementation works (discovery, route modes, the request hot path, status mapping) and how to run a gRPC backend locally for testing.
+
 ### Configuration
+
+The only required setting is `enabled = true`; the gRPC backend defaults to
+`server.target_url`. The minimal config is:
+
+```toml
+[server]
+target_url = "http://my-grpc-service:50051"   # the gRPC backend (scheme informs TLS only)
+
+[grpc]
+enabled = true
+```
+
+Full options (`[[grpc.backends]]` is **optional** — only for multiple backends
+or `base_url` namespacing; when omitted, `server.target_url` is the single backend):
 
 ```toml
 [grpc]
 enabled = true
 route_mode = "auto"
 reflection = true
-reflection_refresh_secs = 300
 request_timeout_secs = 30
 forward_auth_headers = true
 emit_unpopulated = false
 use_proto_names = false
 upstream_tls = false
 
+# Optional — overrides server.target_url with one or more explicit backends.
 [[grpc.backends]]
 address = "service-a:8080"
 
@@ -298,7 +314,6 @@ base_url = "billing"
 | `enabled` | boolean | `false` | `PROXY_GRPC_ENABLED` | Enable gRPC transcoding |
 | `route_mode` | string | `"auto"` | `PROXY_GRPC_ROUTE_MODE` | `"annotation"` (google.api.http), `"convention"` (POST /pkg.Service/Method), or `"auto"` (try annotation, fall back to convention) |
 | `reflection` | boolean | `true` | `PROXY_GRPC_REFLECTION` | Learn schema+routes from backend gRPC server reflection |
-| `reflection_refresh_secs` | integer | `300` | `PROXY_GRPC_REFLECTION_REFRESH_SECS` | Periodic re-reflection interval; `0` = disabled |
 | `descriptor_set_path` | string | `""` | `PROXY_GRPC_DESCRIPTOR_SET_PATH` | Optional baked FileDescriptorSet for air-gapped boot |
 | `request_timeout_secs` | integer | `30` | `PROXY_GRPC_REQUEST_TIMEOUT_SECS` | Per-request timeout for gRPC calls |
 | `forward_auth_headers` | boolean | `true` | `PROXY_GRPC_FORWARD_AUTH_HEADERS` | Map injected X-AUTH-* headers to gRPC metadata |
@@ -307,6 +322,16 @@ base_url = "billing"
 | `upstream_tls` | boolean | `false` | `PROXY_GRPC_UPSTREAM_TLS` | TLS to gRPC backends (h2c if false) |
 
 #### Backend Configuration
+
+`[[grpc.backends]]` is **optional**. When omitted, the single backend is derived
+from `server.target_url` (its `host:port`; an `https://` scheme implies TLS).
+Provide explicit backends only for multiple upstreams or `base_url` namespacing —
+they then replace the `server.target_url` default.
+
+> When explicit backends are given, `server.target_url` (required core config)
+> **must resolve to one of the backend addresses**. Otherwise boot fails — this
+> prevents a confusing config where `target_url` points somewhere unrelated (or a
+> dead port) while traffic actually goes to the backends.
 
 | Field | Type | ENV Variable | Description |
 |-------|------|---|-------------|
@@ -325,7 +350,12 @@ Each gRPC backend **must** expose:
 1. **gRPC server reflection** (`grpc.reflection.v1` or `v1alpha`)
 2. **gRPC health checking** (`grpc.health.v1.Health`)
 
-If either is missing, the proxy returns HTTP 500 naming exactly what is absent.
+Discovery runs in the background, so the proxy **starts immediately even if a
+backend is not yet up** (sidecar cold start) and retries with backoff until the
+backend is reachable. A backend that is not yet ready contributes no routes and
+is reported through the proxy's `/healthz`, which returns **`503`** (naming the
+backend and what is absent) until every backend is ready — then `200`. The proxy
+never crash-loops on an unavailable backend. See [GRPC-TRANSCODING.md](GRPC-TRANSCODING.md#startup-non-blocking-sidecar-safe-discovery).
 
 ### Error Responses
 
@@ -333,7 +363,7 @@ gRPC errors are returned as **RFC 9457 `application/problem+json`** with the sta
 
 ### Unmatched Paths
 
-Requests that don't match any discovered gRPC route fall through to the existing HTTP reverse proxy unchanged.
+When gRPC transcoding is enabled the backend is a gRPC service, so there is **no HTTP fall-through**: a request whose path matches no discovered gRPC method returns **404** (`application/problem+json`) once backends are discovered, or **503** while discovery is still pending. `server.target_url` is required core config but is not used for routing in gRPC mode.
 
 ---
 

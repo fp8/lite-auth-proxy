@@ -22,14 +22,19 @@ type routeEntry struct {
 	backend    *backendConn
 }
 
-// routeTable holds all discovered routes and supports concurrent reads during refresh.
+// routeTable holds all discovered routes and supports concurrent reads while
+// individual backends are (re)discovered. Routes are kept per backend so each
+// backend's discovery can update its own routes independently — backends become
+// ready at different times (sidecar cold start), and refresh re-discovers them
+// on their own schedule.
 type routeTable struct {
-	mu      sync.RWMutex
-	entries []routeEntry
+	mu        sync.RWMutex
+	byBackend map[*backendConn][]routeEntry
+	flat      []routeEntry // rebuilt from byBackend on every change
 }
 
 func newRouteTable() *routeTable {
-	return &routeTable{}
+	return &routeTable{byBackend: map[*backendConn][]routeEntry{}}
 }
 
 // match finds the first route matching the given HTTP method and path.
@@ -38,8 +43,8 @@ func (rt *routeTable) match(method, path string) (*routeEntry, map[string]string
 	rt.mu.RLock()
 	defer rt.mu.RUnlock()
 
-	for i := range rt.entries {
-		e := &rt.entries[i]
+	for i := range rt.flat {
+		e := &rt.flat[i]
 		if e.httpMethod != method {
 			continue
 		}
@@ -56,18 +61,24 @@ func (rt *routeTable) match(method, path string) (*routeEntry, map[string]string
 	return nil, nil
 }
 
-// setRoutes atomically replaces all route entries.
-func (rt *routeTable) setRoutes(entries []routeEntry) {
+// setBackendRoutes atomically replaces the routes contributed by one backend
+// and rebuilds the flattened lookup slice.
+func (rt *routeTable) setBackendRoutes(bc *backendConn, entries []routeEntry) {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
-	rt.entries = entries
+	rt.byBackend[bc] = entries
+	var flat []routeEntry
+	for _, es := range rt.byBackend {
+		flat = append(flat, es...)
+	}
+	rt.flat = flat
 }
 
 // routeCount returns the number of registered routes.
 func (rt *routeTable) routeCount() int {
 	rt.mu.RLock()
 	defer rt.mu.RUnlock()
-	return len(rt.entries)
+	return len(rt.flat)
 }
 
 // buildConventionRoute creates a POST route for convention mode:

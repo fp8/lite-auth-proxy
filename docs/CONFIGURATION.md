@@ -81,6 +81,7 @@ target = ""
 **Health Check Modes:**
 - **Local mode** (target = ""): Returns `{"status":"ok"}` with 200 OK
 - **Proxy mode** (target set): Forwards health check to downstream and returns its response
+- **gRPC mode** (`grpc.enabled`): `/healthz` is driven by a live gRPC health check of the gRPC backend(s); `target` is **ignored** (a warning is logged if set). See [GRPC-TRANSCODING.md](GRPC-TRANSCODING.md#startup--readiness-health-check-driven).
 
 **CLI Health Check:**
 - Use `-healthcheck` to run the configured health check and exit.
@@ -583,21 +584,26 @@ When both the `admin` and `storage-firestore` plugins are compiled in and `[stor
 
 > **Plugin required:** The `[grpc]` section requires the `grpctranscode` plugin. See the [gRPC Transcoding Plugin](PLUGINS.md#grpc-transcoding-plugin) for detailed documentation.
 
+The only required gRPC setting is `enabled = true`; the gRPC backend defaults to `server.target_url`. `[[grpc.backends]]` is optional (multiple backends / `base_url` namespacing) and replaces that default when present — in which case `server.target_url` must resolve to one of the backend addresses, or boot fails.
+
 ```toml
+[server]
+target_url = "http://my-grpc-service:50051"   # the gRPC backend (scheme informs TLS only)
+
 [grpc]
 enabled = true
 route_mode = "auto"
 reflection = true
-reflection_refresh_secs = 300
 request_timeout_secs = 30
 forward_auth_headers = true
 emit_unpopulated = false
 use_proto_names = false
 upstream_tls = false
 
-[[grpc.backends]]
-address = "service-a:8080"
-base_url = ""
+# Optional: explicit backends replace the server.target_url default.
+# [[grpc.backends]]
+# address = "service-a:8080"
+# base_url = ""
 ```
 
 ### gRPC Overrides
@@ -607,7 +613,6 @@ base_url = ""
 | `PROXY_GRPC_ENABLED` | `grpc.enabled` | boolean |
 | `PROXY_GRPC_ROUTE_MODE` | `grpc.route_mode` | string |
 | `PROXY_GRPC_REFLECTION` | `grpc.reflection` | boolean |
-| `PROXY_GRPC_REFLECTION_REFRESH_SECS` | `grpc.reflection_refresh_secs` | integer |
 | `PROXY_GRPC_DESCRIPTOR_SET_PATH` | `grpc.descriptor_set_path` | string |
 | `PROXY_GRPC_REQUEST_TIMEOUT_SECS` | `grpc.request_timeout_secs` | integer |
 | `PROXY_GRPC_FORWARD_AUTH_HEADERS` | `grpc.forward_auth_headers` | boolean |

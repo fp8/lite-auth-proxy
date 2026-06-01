@@ -35,6 +35,7 @@ type handler struct {
 	healthProxy   *httputil.ReverseProxy
 	jwtValidator  *jwt.Validator
 	authProviders []plugin.AuthProvider
+	readiness     []plugin.ReadinessReporter
 }
 
 // ProxyDependencies exposes components created inside NewHandlerWithDeps that
@@ -87,6 +88,10 @@ func NewHandlerWithDeps(cfg *config.Config, logger *slog.Logger) (http.Handler, 
 
 	var healthProxy *httputil.ReverseProxy
 	if cfg.Server.HealthCheck.Target != "" {
+		if cfg.GRPC.Enabled && logger != nil {
+			logger.Warn("server.health_check.target is ignored because gRPC transcoding is enabled; " +
+				"/healthz is driven by the gRPC backend health check")
+		}
 		healthTarget, err := url.Parse(cfg.Server.HealthCheck.Target)
 		if err != nil {
 			return nil, nil, fmt.Errorf("invalid health_check.target: %w", err)
@@ -112,6 +117,7 @@ func NewHandlerWithDeps(cfg *config.Config, logger *slog.Logger) (http.Handler, 
 	var ruleStore store.RuleStore
 	rateLimiters := map[string]*ratelimit.RateLimiter{}
 	var authProviders []plugin.AuthProvider
+	var readinessReporters []plugin.ReadinessReporter
 	var pluginMiddlewares []Middleware
 
 	if usePlugins {
@@ -206,6 +212,9 @@ func NewHandlerWithDeps(cfg *config.Config, logger *slog.Logger) (http.Handler, 
 				}
 			}
 		}
+
+		// Plugins that report readiness contribute to /healthz.
+		readinessReporters = plugin.OfType[plugin.ReadinessReporter]()
 	} else {
 		// --- Legacy direct construction (no plugins registered) ---
 
@@ -284,6 +293,7 @@ func NewHandlerWithDeps(cfg *config.Config, logger *slog.Logger) (http.Handler, 
 		healthProxy:   healthProxy,
 		jwtValidator:  jwt.NewValidator(&cfg.Auth.JWT),
 		authProviders: authProviders,
+		readiness:     readinessReporters,
 	}
 
 	// Assemble pipeline: core middleware + plugin middleware.
@@ -476,12 +486,47 @@ func (h *handler) forward(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) handleHealth(w http.ResponseWriter, r *http.Request) {
+	// Plugins (e.g. gRPC transcoding) may still be establishing their upstreams.
+	// Report not-ready until they are, so a startup/readiness probe only passes
+	// once the proxy can actually serve — rather than failing the whole process
+	// at boot when an upstream is slow to come up.
+	if errs := h.readinessErrors(); len(errs) > 0 {
+		// The cause is already logged by the plugin's discovery loop; keep this
+		// at Debug so frequent probes don't flood the logs.
+		h.logger.Debug("health check: not ready", "errors", errs)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"status": "unavailable",
+			"errors": errs,
+		})
+		return
+	}
+
+	// When gRPC transcoding is enabled, the backend is a gRPC service whose
+	// health is probed over the gRPC health protocol (above). That is the
+	// authoritative readiness signal, so /healthz is driven solely by it — the
+	// HTTP server.health_check.target does not apply and is not proxied to.
+	if h.cfg.GRPC.Enabled {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		return
+	}
+
 	if h.cfg.Server.HealthCheck.Target == "" || h.healthProxy == nil {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 		return
 	}
 
 	h.healthProxy.ServeHTTP(w, r)
+}
+
+// readinessErrors collects the messages of any plugin that is not yet ready.
+func (h *handler) readinessErrors() []string {
+	var errs []string
+	for _, rr := range h.readiness {
+		if err := rr.Ready(); err != nil {
+			errs = append(errs, err.Error())
+		}
+	}
+	return errs
 }
 
 func (h *handler) respondJWTError(w http.ResponseWriter, err error) {

@@ -108,17 +108,20 @@ cache_ttl_mins = 1440                          # JWKS key cache TTL (24 hours)
 # Example: email = "/.*@yourcompany\\.com$/"
 
 [grpc]
-enabled = false                                # Enable gRPC transcoding (flex build only)
+# When enabled, the gRPC backend is server.target_url by default — the only
+# required gRPC setting is `enabled = true`. [[grpc.backends]] below is OPTIONAL
+# and only needed for multiple backends or base_url namespacing.
+enabled = false                                # Enable gRPC transcoding (flex build only). The backend is server.target_url.
 route_mode = "auto"                            # "annotation" (google.api.http) | "convention" (POST /<pkg>.<Service>/<Method>) | "auto" (try annotation, else convention)
 reflection = true                              # Learn schema+routes from backend gRPC server reflection
-reflection_refresh_secs = 300                  # Periodic re-reflection interval (0 = disabled)
 # descriptor_set_path = ""                     # Optional baked FileDescriptorSet fallback (air-gapped boot)
 request_timeout_secs = 30                      # Per-request timeout for gRPC calls
 forward_auth_headers = true                    # Map injected X-AUTH-* headers to gRPC metadata
 emit_unpopulated = false                       # protojson: emit zero/absent fields in JSON responses
 use_proto_names = false                        # protojson: use proto field names (true) vs camelCase jsonName (false)
-upstream_tls = false                           # TLS to gRPC backends (plaintext h2c if false)
+upstream_tls = false                           # TLS to gRPC backends (plaintext h2c if false; https:// target_url implies TLS)
 
+# OPTIONAL — only when you need more than the single server.target_url backend.
 # [[grpc.backends]]                            # Each entry declares one upstream gRPC endpoint.
 # address = "service-a:8080"                   # gRPC backend host:port
 # base_url = ""                                # Optional: URL prefix for this backend's routes

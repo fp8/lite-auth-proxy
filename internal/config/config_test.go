@@ -758,7 +758,6 @@ func TestEnvVarOverridesComplete(t *testing.T) {
 		"PROXY_GRPC_ENABLED":              "true",
 		"PROXY_GRPC_ROUTE_MODE":           "convention",
 		"PROXY_GRPC_REFLECTION":           "true",
-		"PROXY_GRPC_REFLECTION_REFRESH_SECS": "120",
 		"PROXY_GRPC_DESCRIPTOR_SET_PATH":  "/tmp/desc.pb",
 		"PROXY_GRPC_REQUEST_TIMEOUT_SECS": "15",
 		"PROXY_GRPC_FORWARD_AUTH_HEADERS": "true",
@@ -1000,9 +999,6 @@ value = "secret"
 	if !cfg.GRPC.Reflection {
 		t.Error("PROXY_GRPC_REFLECTION: got false")
 	}
-	if cfg.GRPC.ReflectionRefreshS != 120 {
-		t.Errorf("PROXY_GRPC_REFLECTION_REFRESH_SECS: got %d", cfg.GRPC.ReflectionRefreshS)
-	}
 	if cfg.GRPC.DescriptorSetPath != "/tmp/desc.pb" {
 		t.Errorf("PROXY_GRPC_DESCRIPTOR_SET_PATH: got %q", cfg.GRPC.DescriptorSetPath)
 	}
@@ -1231,7 +1227,6 @@ func TestEnvOverridesCoverageGuard(t *testing.T) {
 		"PROXY_GRPC_ENABLED":                               true,
 		"PROXY_GRPC_ROUTE_MODE":                            true,
 		"PROXY_GRPC_REFLECTION":                            true,
-		"PROXY_GRPC_REFLECTION_REFRESH_SECS":               true,
 		"PROXY_GRPC_DESCRIPTOR_SET_PATH":                   true,
 		"PROXY_GRPC_REQUEST_TIMEOUT_SECS":                  true,
 		"PROXY_GRPC_FORWARD_AUTH_HEADERS":                  true,
