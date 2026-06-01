@@ -1,5 +1,18 @@
 # lite-auth-proxy
 
+# 1.3.0 [TBD]
+
+## gRPC Transcoding Plugin
+
+* **REST/JSON to gRPC transcoding** — new `grpctranscode` plugin (flex build only, priority 95) transcodes inbound REST/JSON requests to unary gRPC calls on upstream backends and gRPC responses back to JSON. Fully generic: learns services, methods, message schemas, and REST mappings at runtime via gRPC server reflection — no per-service code stubs and no transcoding config files.
+* **Three route modes**: `annotation` (reads `google.api.http` method options), `convention` (POST `/<pkg>.<Service>/<Method>`), and `auto` (try annotation, fall back to convention).
+* **Multiple backends** with optional `base_url` prefixes for route namespacing. Each backend's services are discovered independently via reflection.
+* **Backend requirements enforced**: each gRPC backend must expose both server reflection and `grpc.health.v1.Health`. Missing either yields HTTP 500 with a clear error.
+* **RFC 9457 error responses**: gRPC errors are returned as `application/problem+json` with standard grpc-gateway status code mapping.
+* **Periodic refresh**: descriptor cache with configurable refresh interval and lazy re-reflection on `UNIMPLEMENTED`/`NOT_FOUND`.
+* **`[grpc]` configuration section** with `PROXY_GRPC_*` env var overrides following the project's naming convention. Config env-override guard tests updated.
+* **Integration tests** with an in-process gRPC server covering convention mode, base_url routing, gRPC status mapping, multi-method discovery, and missing health check detection.
+
 # 1.2.1 [2026-06-01]
 
 ## Testing

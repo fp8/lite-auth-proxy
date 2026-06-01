@@ -21,13 +21,14 @@ import (
 	// Flex build: register all plugins via blank imports.
 	_ "github.com/fp8/lite-auth-proxy/internal/plugins/admin"
 	_ "github.com/fp8/lite-auth-proxy/internal/plugins/apikey"
+	_ "github.com/fp8/lite-auth-proxy/internal/plugins/grpctranscode"
 	_ "github.com/fp8/lite-auth-proxy/internal/plugins/ratelimit"
 	_ "github.com/fp8/lite-auth-proxy/internal/plugins/storage/firestore"
 )
 
 var (
 	// Version is set via ldflags during build
-	Version = "1.2.1"
+	Version = "1.3.0"
 )
 
 const (

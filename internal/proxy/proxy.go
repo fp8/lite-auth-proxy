@@ -345,6 +345,7 @@ func validatePluginAvailability(cfg *config.Config) error {
 		},
 		{cfg.Admin.Enabled, "admin", "admin API is configured but the admin plugin is not compiled in"},
 		{cfg.Auth.APIKey.Enabled, "apikey", "API-key authentication is configured but the apikey plugin is not compiled in"},
+		{cfg.GRPC.Enabled, "grpctranscode", "gRPC transcoding is configured but the grpctranscode plugin is not compiled in"},
 	}
 
 	for _, c := range checks {

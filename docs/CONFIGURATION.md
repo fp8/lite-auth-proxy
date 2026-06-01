@@ -21,6 +21,7 @@ The configuration is organized into these top-level sections:
 - **[auth.jwt]** — JWT authentication (core — always available)
 - **[auth.api_key]** — API-Key authentication (requires `apikey` plugin)
 - **[admin]** — Dynamic control-plane API (requires `admin` plugin)
+- **[grpc]** — gRPC transcoding (requires `grpctranscode` plugin)
 - **[storage]** — Persistent storage backend (requires a `storage-*` plugin)
 
 Sections marked as requiring a plugin are only available in builds that include the plugin. The flex build (`flex-auth-proxy`) includes all plugins. The lite build (`lite-auth-proxy`) includes only core sections. See the [Plugin Guide](PLUGINS.md) for details.
@@ -577,6 +578,44 @@ When both `auth.jwt.enabled` and `auth.api_key.enabled` are `false`, the proxy o
 ### Admin + Storage for Multi-Instance Deployments
 
 When both the `admin` and `storage-firestore` plugins are compiled in and `[storage]` is configured, admin rules are persisted to Firestore and synchronized across all Cloud Run instances. Without the storage plugin, rules are per-instance only. See the [Deployment Model](PLUGINS.md#deployment-model).
+
+## gRPC Transcoding
+
+> **Plugin required:** The `[grpc]` section requires the `grpctranscode` plugin. See the [gRPC Transcoding Plugin](PLUGINS.md#grpc-transcoding-plugin) for detailed documentation.
+
+```toml
+[grpc]
+enabled = true
+route_mode = "auto"
+reflection = true
+reflection_refresh_secs = 300
+request_timeout_secs = 30
+forward_auth_headers = true
+emit_unpopulated = false
+use_proto_names = false
+upstream_tls = false
+
+[[grpc.backends]]
+address = "service-a:8080"
+base_url = ""
+```
+
+### gRPC Overrides
+
+| ENV Variable | Field | Type |
+|---|---|---|
+| `PROXY_GRPC_ENABLED` | `grpc.enabled` | boolean |
+| `PROXY_GRPC_ROUTE_MODE` | `grpc.route_mode` | string |
+| `PROXY_GRPC_REFLECTION` | `grpc.reflection` | boolean |
+| `PROXY_GRPC_REFLECTION_REFRESH_SECS` | `grpc.reflection_refresh_secs` | integer |
+| `PROXY_GRPC_DESCRIPTOR_SET_PATH` | `grpc.descriptor_set_path` | string |
+| `PROXY_GRPC_REQUEST_TIMEOUT_SECS` | `grpc.request_timeout_secs` | integer |
+| `PROXY_GRPC_FORWARD_AUTH_HEADERS` | `grpc.forward_auth_headers` | boolean |
+| `PROXY_GRPC_EMIT_UNPOPULATED` | `grpc.emit_unpopulated` | boolean |
+| `PROXY_GRPC_USE_PROTO_NAMES` | `grpc.use_proto_names` | boolean |
+| `PROXY_GRPC_UPSTREAM_TLS` | `grpc.upstream_tls` | boolean |
+| `PROXY_GRPC_BACKENDS_{n}_ADDRESS` | `grpc.backends[n].address` | string |
+| `PROXY_GRPC_BACKENDS_{n}_BASE_URL` | `grpc.backends[n].base_url` | string |
 
 ## See Also
 

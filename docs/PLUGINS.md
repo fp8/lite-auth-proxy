@@ -260,6 +260,83 @@ enabled = false                      # Enable persistent storage backend (Firest
 
 ---
 
+## gRPC Transcoding Plugin
+
+| Property | Value |
+|----------|-------|
+| **Name** | `grpctranscode` |
+| **Priority** | `95` |
+| **Interfaces** | `MiddlewareProvider`, `ConfigValidator`, `Starter`, `Stopper` |
+| **Import** | `_ "github.com/fp8/lite-auth-proxy/internal/plugins/grpctranscode"` |
+
+Transcodes inbound REST/JSON requests to unary gRPC calls on upstream backends, and gRPC responses back to JSON. Fully generic: learns services, methods, message schemas, and REST mappings at runtime via gRPC server reflection. No per-service code stubs and no transcoding config files.
+
+### Configuration
+
+```toml
+[grpc]
+enabled = true
+route_mode = "auto"
+reflection = true
+reflection_refresh_secs = 300
+request_timeout_secs = 30
+forward_auth_headers = true
+emit_unpopulated = false
+use_proto_names = false
+upstream_tls = false
+
+[[grpc.backends]]
+address = "service-a:8080"
+
+[[grpc.backends]]
+address = "service-b:8080"
+base_url = "billing"
+```
+
+| Field | Type | Default | ENV Variable | Description |
+|-------|------|---------|---|-------------|
+| `enabled` | boolean | `false` | `PROXY_GRPC_ENABLED` | Enable gRPC transcoding |
+| `route_mode` | string | `"auto"` | `PROXY_GRPC_ROUTE_MODE` | `"annotation"` (google.api.http), `"convention"` (POST /pkg.Service/Method), or `"auto"` (try annotation, fall back to convention) |
+| `reflection` | boolean | `true` | `PROXY_GRPC_REFLECTION` | Learn schema+routes from backend gRPC server reflection |
+| `reflection_refresh_secs` | integer | `300` | `PROXY_GRPC_REFLECTION_REFRESH_SECS` | Periodic re-reflection interval; `0` = disabled |
+| `descriptor_set_path` | string | `""` | `PROXY_GRPC_DESCRIPTOR_SET_PATH` | Optional baked FileDescriptorSet for air-gapped boot |
+| `request_timeout_secs` | integer | `30` | `PROXY_GRPC_REQUEST_TIMEOUT_SECS` | Per-request timeout for gRPC calls |
+| `forward_auth_headers` | boolean | `true` | `PROXY_GRPC_FORWARD_AUTH_HEADERS` | Map injected X-AUTH-* headers to gRPC metadata |
+| `emit_unpopulated` | boolean | `false` | `PROXY_GRPC_EMIT_UNPOPULATED` | protojson: emit zero/absent fields in JSON |
+| `use_proto_names` | boolean | `false` | `PROXY_GRPC_USE_PROTO_NAMES` | protojson: use proto field names vs camelCase |
+| `upstream_tls` | boolean | `false` | `PROXY_GRPC_UPSTREAM_TLS` | TLS to gRPC backends (h2c if false) |
+
+#### Backend Configuration
+
+| Field | Type | ENV Variable | Description |
+|-------|------|---|-------------|
+| `address` | string | `PROXY_GRPC_BACKENDS_{n}_ADDRESS` | gRPC backend host:port |
+| `base_url` | string | `PROXY_GRPC_BACKENDS_{n}_BASE_URL` | Optional URL prefix for this backend's routes |
+
+### Route Modes
+
+- **`annotation`**: Reads `google.api.http` method options from reflected descriptors. Backends must include `google/api/annotations.proto` in their proto definitions.
+- **`convention`**: Exposes every unary method as `POST /<package>.<Service>/<Method>` with the JSON body as the full request message. Zero annotations needed.
+- **`auto`** (default): Tries annotation first; falls back to convention for methods without `google.api.http`.
+
+### Requirements
+
+Each gRPC backend **must** expose:
+1. **gRPC server reflection** (`grpc.reflection.v1` or `v1alpha`)
+2. **gRPC health checking** (`grpc.health.v1.Health`)
+
+If either is missing, the proxy returns HTTP 500 naming exactly what is absent.
+
+### Error Responses
+
+gRPC errors are returned as **RFC 9457 `application/problem+json`** with the standard grpc-gateway status mapping: `OK`->200, `INVALID_ARGUMENT`->400, `UNAUTHENTICATED`->401, `NOT_FOUND`->404, `RESOURCE_EXHAUSTED`->429, `UNIMPLEMENTED`->501, `UNAVAILABLE`->503, `DEADLINE_EXCEEDED`->504, etc.
+
+### Unmatched Paths
+
+Requests that don't match any discovered gRPC route fall through to the existing HTTP reverse proxy unchanged.
+
+---
+
 ## Deployment Model
 
 | Admin Plugin | Storage Plugin | Cloud Run Deployment |
@@ -325,7 +402,8 @@ func init() {
 | 0-9 | Storage backends (initialize first) |
 | 10-49 | Core middleware |
 | 50-89 | Feature plugins (admin, ratelimit) |
-| 90+ | Auth plugins (run last in middleware chain) |
+| 90-94 | Auth plugins |
+| 95+ | Terminal plugins (gRPC transcoding — short-circuits matched routes) |
 
 ### Constraints
 

@@ -754,6 +754,19 @@ func TestEnvVarOverridesComplete(t *testing.T) {
 		"PROXY_ADMIN_JWT_FILTERS_EMAIL_VERIFIED": "true",
 		"PROXY_ADMIN_JWT_MAPPINGS_EMAIL":        "ADMIN-EMAIL",
 		"PROXY_ADMIN_JWT_MAPPINGS_SUB":          "ADMIN-ID",
+		// GRPC
+		"PROXY_GRPC_ENABLED":              "true",
+		"PROXY_GRPC_ROUTE_MODE":           "convention",
+		"PROXY_GRPC_REFLECTION":           "true",
+		"PROXY_GRPC_REFLECTION_REFRESH_SECS": "120",
+		"PROXY_GRPC_DESCRIPTOR_SET_PATH":  "/tmp/desc.pb",
+		"PROXY_GRPC_REQUEST_TIMEOUT_SECS": "15",
+		"PROXY_GRPC_FORWARD_AUTH_HEADERS": "true",
+		"PROXY_GRPC_EMIT_UNPOPULATED":     "true",
+		"PROXY_GRPC_USE_PROTO_NAMES":      "true",
+		"PROXY_GRPC_UPSTREAM_TLS":         "true",
+		"PROXY_GRPC_BACKENDS_0_ADDRESS":   "service-a:8080",
+		"PROXY_GRPC_BACKENDS_0_BASE_URL":  "timatic",
 	}
 	for k, v := range envs {
 		_ = os.Setenv(k, v)
@@ -976,6 +989,44 @@ value = "secret"
 	if cfg.Admin.JWT.Mappings["sub"] != "ADMIN-ID" {
 		t.Errorf("PROXY_ADMIN_JWT_MAPPINGS_SUB: got %q", cfg.Admin.JWT.Mappings["sub"])
 	}
+
+	// ── GRPC ──
+	if !cfg.GRPC.Enabled {
+		t.Error("PROXY_GRPC_ENABLED: got false")
+	}
+	if cfg.GRPC.RouteMode != "convention" {
+		t.Errorf("PROXY_GRPC_ROUTE_MODE: got %q", cfg.GRPC.RouteMode)
+	}
+	if !cfg.GRPC.Reflection {
+		t.Error("PROXY_GRPC_REFLECTION: got false")
+	}
+	if cfg.GRPC.ReflectionRefreshS != 120 {
+		t.Errorf("PROXY_GRPC_REFLECTION_REFRESH_SECS: got %d", cfg.GRPC.ReflectionRefreshS)
+	}
+	if cfg.GRPC.DescriptorSetPath != "/tmp/desc.pb" {
+		t.Errorf("PROXY_GRPC_DESCRIPTOR_SET_PATH: got %q", cfg.GRPC.DescriptorSetPath)
+	}
+	if cfg.GRPC.RequestTimeoutSecs != 15 {
+		t.Errorf("PROXY_GRPC_REQUEST_TIMEOUT_SECS: got %d", cfg.GRPC.RequestTimeoutSecs)
+	}
+	if !cfg.GRPC.ForwardAuthHeaders {
+		t.Error("PROXY_GRPC_FORWARD_AUTH_HEADERS: got false")
+	}
+	if !cfg.GRPC.EmitUnpopulated {
+		t.Error("PROXY_GRPC_EMIT_UNPOPULATED: got false")
+	}
+	if !cfg.GRPC.UseProtoNames {
+		t.Error("PROXY_GRPC_USE_PROTO_NAMES: got false")
+	}
+	if !cfg.GRPC.UpstreamTLS {
+		t.Error("PROXY_GRPC_UPSTREAM_TLS: got false")
+	}
+	if len(cfg.GRPC.Backends) != 1 || cfg.GRPC.Backends[0].Address != "service-a:8080" {
+		t.Errorf("PROXY_GRPC_BACKENDS_0_ADDRESS: got %v", cfg.GRPC.Backends)
+	}
+	if cfg.GRPC.Backends[0].BaseURL != "timatic" {
+		t.Errorf("PROXY_GRPC_BACKENDS_0_BASE_URL: got %q", cfg.GRPC.Backends[0].BaseURL)
+	}
 }
 
 // --- GOOGLE_CLOUD_PROJECT resolution tests ---
@@ -1177,6 +1228,16 @@ func TestEnvOverridesCoverageGuard(t *testing.T) {
 		"PROXY_ADMIN_JWT_ISSUER":                           true,
 		"PROXY_ADMIN_JWT_AUDIENCE":                         true,
 		"PROXY_ADMIN_JWT_ALLOWED_EMAILS":                   true,
+		"PROXY_GRPC_ENABLED":                               true,
+		"PROXY_GRPC_ROUTE_MODE":                            true,
+		"PROXY_GRPC_REFLECTION":                            true,
+		"PROXY_GRPC_REFLECTION_REFRESH_SECS":               true,
+		"PROXY_GRPC_DESCRIPTOR_SET_PATH":                   true,
+		"PROXY_GRPC_REQUEST_TIMEOUT_SECS":                  true,
+		"PROXY_GRPC_FORWARD_AUTH_HEADERS":                  true,
+		"PROXY_GRPC_EMIT_UNPOPULATED":                      true,
+		"PROXY_GRPC_USE_PROTO_NAMES":                       true,
+		"PROXY_GRPC_UPSTREAM_TLS":                          true,
 	}
 
 	// Map override prefixes that are tested via specific env vars in the test

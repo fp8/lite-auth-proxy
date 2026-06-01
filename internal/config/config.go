@@ -21,6 +21,28 @@ type Config struct {
 	Auth     AuthConfig     `toml:"auth"`
 	Admin    AdminConfig    `toml:"admin"`
 	Storage  StorageConfig  `toml:"storage"`
+	GRPC     GRPCConfig     `toml:"grpc"`
+}
+
+// GRPCConfig contains settings for the gRPC transcoding plugin.
+type GRPCConfig struct {
+	Enabled             bool          `toml:"enabled"`
+	RouteMode           string        `toml:"route_mode"`
+	Reflection          bool          `toml:"reflection"`
+	ReflectionRefreshS  int           `toml:"reflection_refresh_secs"`
+	DescriptorSetPath   string        `toml:"descriptor_set_path"`
+	RequestTimeoutSecs  int           `toml:"request_timeout_secs"`
+	ForwardAuthHeaders  bool          `toml:"forward_auth_headers"`
+	EmitUnpopulated     bool          `toml:"emit_unpopulated"`
+	UseProtoNames       bool          `toml:"use_proto_names"`
+	UpstreamTLS         bool          `toml:"upstream_tls"`
+	Backends            []GRPCBackend `toml:"backends"`
+}
+
+// GRPCBackend describes a single upstream gRPC endpoint.
+type GRPCBackend struct {
+	Address string `toml:"address"`
+	BaseURL string `toml:"base_url"`
 }
 
 // StorageConfig contains settings for the persistent storage backend.
@@ -451,7 +473,94 @@ func applyEnvOverrides(config *Config) error {
 	config.Admin.JWT.Filters = applyJWTMapOverrides("PROXY_ADMIN_JWT_FILTERS_", config.Admin.JWT.Filters)
 	config.Admin.JWT.Mappings = applyJWTMapOverrides("PROXY_ADMIN_JWT_MAPPINGS_", config.Admin.JWT.Mappings)
 
+	// GRPC overrides
+	if val := os.Getenv("PROXY_GRPC_ENABLED"); val != "" {
+		enabled, err := strconv.ParseBool(val)
+		if err != nil {
+			return fmt.Errorf("invalid PROXY_GRPC_ENABLED: %w", err)
+		}
+		config.GRPC.Enabled = enabled
+	}
+	if val := os.Getenv("PROXY_GRPC_ROUTE_MODE"); val != "" {
+		config.GRPC.RouteMode = val
+	}
+	if val := os.Getenv("PROXY_GRPC_REFLECTION"); val != "" {
+		enabled, err := strconv.ParseBool(val)
+		if err != nil {
+			return fmt.Errorf("invalid PROXY_GRPC_REFLECTION: %w", err)
+		}
+		config.GRPC.Reflection = enabled
+	}
+	if val := os.Getenv("PROXY_GRPC_REFLECTION_REFRESH_SECS"); val != "" {
+		secs, err := strconv.Atoi(val)
+		if err != nil {
+			return fmt.Errorf("invalid PROXY_GRPC_REFLECTION_REFRESH_SECS: %w", err)
+		}
+		config.GRPC.ReflectionRefreshS = secs
+	}
+	if val := os.Getenv("PROXY_GRPC_DESCRIPTOR_SET_PATH"); val != "" {
+		config.GRPC.DescriptorSetPath = val
+	}
+	if val := os.Getenv("PROXY_GRPC_REQUEST_TIMEOUT_SECS"); val != "" {
+		secs, err := strconv.Atoi(val)
+		if err != nil {
+			return fmt.Errorf("invalid PROXY_GRPC_REQUEST_TIMEOUT_SECS: %w", err)
+		}
+		config.GRPC.RequestTimeoutSecs = secs
+	}
+	if val := os.Getenv("PROXY_GRPC_FORWARD_AUTH_HEADERS"); val != "" {
+		enabled, err := strconv.ParseBool(val)
+		if err != nil {
+			return fmt.Errorf("invalid PROXY_GRPC_FORWARD_AUTH_HEADERS: %w", err)
+		}
+		config.GRPC.ForwardAuthHeaders = enabled
+	}
+	if val := os.Getenv("PROXY_GRPC_EMIT_UNPOPULATED"); val != "" {
+		enabled, err := strconv.ParseBool(val)
+		if err != nil {
+			return fmt.Errorf("invalid PROXY_GRPC_EMIT_UNPOPULATED: %w", err)
+		}
+		config.GRPC.EmitUnpopulated = enabled
+	}
+	if val := os.Getenv("PROXY_GRPC_USE_PROTO_NAMES"); val != "" {
+		enabled, err := strconv.ParseBool(val)
+		if err != nil {
+			return fmt.Errorf("invalid PROXY_GRPC_USE_PROTO_NAMES: %w", err)
+		}
+		config.GRPC.UseProtoNames = enabled
+	}
+	if val := os.Getenv("PROXY_GRPC_UPSTREAM_TLS"); val != "" {
+		enabled, err := strconv.ParseBool(val)
+		if err != nil {
+			return fmt.Errorf("invalid PROXY_GRPC_UPSTREAM_TLS: %w", err)
+		}
+		config.GRPC.UpstreamTLS = enabled
+	}
+	// Backend overrides: PROXY_GRPC_BACKENDS_0_ADDRESS, PROXY_GRPC_BACKENDS_0_BASE_URL, ...
+	applyGRPCBackendOverrides(config)
+
 	return nil
+}
+
+// applyGRPCBackendOverrides discovers PROXY_GRPC_BACKENDS_{n}_ADDRESS env vars
+// and adds/replaces backend entries at the given index.
+func applyGRPCBackendOverrides(config *Config) {
+	for i := 0; ; i++ {
+		addrKey := fmt.Sprintf("PROXY_GRPC_BACKENDS_%d_ADDRESS", i)
+		addr := os.Getenv(addrKey)
+		if addr == "" {
+			break
+		}
+		// Grow slice if needed.
+		for len(config.GRPC.Backends) <= i {
+			config.GRPC.Backends = append(config.GRPC.Backends, GRPCBackend{})
+		}
+		config.GRPC.Backends[i].Address = addr
+		baseKey := fmt.Sprintf("PROXY_GRPC_BACKENDS_%d_BASE_URL", i)
+		if val := os.Getenv(baseKey); val != "" {
+			config.GRPC.Backends[i].BaseURL = val
+		}
+	}
 }
 
 func splitCSV(value string) []string {
@@ -586,6 +695,23 @@ func setDefaults(config *Config) {
 		config.Auth.APIKey.Name = "X-API-KEY"
 	}
 
+	// GRPC defaults
+	if config.GRPC.RouteMode == "" {
+		config.GRPC.RouteMode = "auto"
+	}
+	if config.GRPC.Enabled && !config.GRPC.Reflection && config.GRPC.DescriptorSetPath == "" {
+		config.GRPC.Reflection = true
+	}
+	if config.GRPC.ReflectionRefreshS == 0 {
+		config.GRPC.ReflectionRefreshS = 300
+	}
+	if config.GRPC.RequestTimeoutSecs == 0 {
+		config.GRPC.RequestTimeoutSecs = 30
+	}
+	if config.GRPC.Enabled {
+		config.GRPC.ForwardAuthHeaders = true
+	}
+
 	// Resolve GOOGLE_CLOUD_PROJECT if needed
 	resolveGCPProjectID(config)
 }
@@ -691,6 +817,15 @@ func validate(config *Config) error {
 	// Server validation
 	if config.Server.Port < 1 || config.Server.Port > 65535 {
 		return fmt.Errorf("server port must be between 1 and 65535, got: %d", config.Server.Port)
+	}
+
+	// GRPC validation
+	if config.GRPC.Enabled {
+		switch config.GRPC.RouteMode {
+		case "annotation", "convention", "auto":
+		default:
+			return fmt.Errorf("grpc.route_mode must be \"annotation\", \"convention\", or \"auto\", got: %q", config.GRPC.RouteMode)
+		}
 	}
 
 	return nil

@@ -20,6 +20,7 @@ lite-auth-proxy is a lightweight authentication proxy that sits in front of your
 - **Dynamic Control Plane**: Runtime throttle/block/allow rules via `/admin/control` API — no restart needed
 - **Persistent Rule Storage**: Firestore-backed rule sync across Cloud Run instances with zero-latency hot path
 - **Throttle Delay**: Optional DDoS-safe delay on rate-limited responses to improve stability under attack
+- **gRPC Transcoding**: REST/JSON to unary gRPC transcoding via server reflection — no code stubs, no config files
 - **Structured Logging**: JSON/text logging with `slog`, Google Cloud Logging compatible
 - **URL Rewriting**: Strip path prefixes before forwarding
 - **Health Checks**: Configurable health endpoint with proxy-to-downstream support
