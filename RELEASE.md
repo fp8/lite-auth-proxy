@@ -1,6 +1,6 @@
 # lite-auth-proxy
 
-# 1.3.0 [TBD]
+# 1.3.0 [2026-07-12]
 
 ## gRPC Transcoding Plugin
 
