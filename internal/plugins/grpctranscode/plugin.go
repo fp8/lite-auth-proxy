@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/fp8/lite-auth-proxy/internal/auth/jwt"
 	"github.com/fp8/lite-auth-proxy/internal/config"
 	"github.com/fp8/lite-auth-proxy/internal/plugin"
 	"google.golang.org/grpc/codes"
@@ -358,6 +359,18 @@ func (p *grpcTranscodePlugin) BuildMiddleware(deps *plugin.Deps) ([]plugin.Middl
 	forwardAuth := deps.Config.GRPC.ForwardAuthHeaders
 	timeout := time.Duration(deps.Config.GRPC.RequestTimeoutSecs) * time.Second
 
+	// The grpctranscode middleware owns the request and never reaches the base
+	// handler where JWT validation + X-AUTH-* injection normally run. So we run
+	// the same auth step here: validate the Bearer JWT, evaluate filters, and
+	// inject the mapped X-AUTH-* headers, which transcodeRequest then forwards as
+	// gRPC metadata. Without this the gRPC path would be unauthenticated and no
+	// identity would reach the backend.
+	authCfg := &deps.Config.Auth
+	var jwtValidator *jwt.Validator
+	if authCfg.JWT.Enabled {
+		jwtValidator = jwt.NewValidator(&authCfg.JWT)
+	}
+
 	marshalOpts := protojson.MarshalOptions{
 		EmitUnpopulated: deps.Config.GRPC.EmitUnpopulated,
 		UseProtoNames:   deps.Config.GRPC.UseProtoNames,
@@ -375,6 +388,28 @@ func (p *grpcTranscodePlugin) BuildMiddleware(deps *plugin.Deps) ([]plugin.Middl
 	// called.
 	mw := func(_ http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Edge auth for the gRPC path: validate the Bearer JWT and inject the
+			// mapped X-AUTH-* identity headers before transcoding.
+			if jwtValidator != nil {
+				token, ok := bearerToken(r.Header.Get("Authorization"))
+				if !ok {
+					problemJSON(w, http.StatusUnauthorized, "Unauthorized", "missing bearer token")
+					return
+				}
+				claims, err := jwtValidator.ValidateToken(token)
+				if err != nil {
+					problemJSON(w, http.StatusUnauthorized, "Unauthorized", "invalid token")
+					return
+				}
+				if err := jwt.EvaluateFilters(claims, authCfg.JWT.Filters); err != nil {
+					problemJSON(w, http.StatusUnauthorized, "Unauthorized", "access denied")
+					return
+				}
+				for name, value := range jwt.MapClaims(claims, authCfg.JWT.Mappings, headerPrefix) {
+					r.Header.Set(name, value)
+				}
+			}
+
 			// Bootstrap discovery from the request path so the endpoint works
 			// even if nothing ever calls /healthz. No-op once all backends are
 			// discovered; throttled while any are still pending.
@@ -444,4 +479,13 @@ func buildRoutes(mode string, logger *slog.Logger, methods []discoveredMethod, b
 		}
 	}
 	return entries
+}
+
+// bearerToken extracts the token from an "Authorization: Bearer <token>" header.
+func bearerToken(authorization string) (string, bool) {
+	const prefix = "Bearer "
+	if len(authorization) > len(prefix) && strings.EqualFold(authorization[:len(prefix)], prefix) {
+		return strings.TrimSpace(authorization[len(prefix):]), true
+	}
+	return "", false
 }

@@ -107,13 +107,17 @@ func transcodeRequest(
 		}
 	}
 
-	// Build gRPC metadata from auth headers.
+	// Build gRPC metadata from auth headers. Match the prefix case-insensitively:
+	// Go canonicalizes header keys (e.g. "X-Auth-User-Id") while the configured
+	// prefix is typically upper-cased ("X-AUTH-"), so a case-sensitive compare
+	// would never match a header set via http.Header.Set.
 	ctx := r.Context()
 	if forwardAuthHeaders && headerPrefix != "" {
+		lowerPrefix := strings.ToLower(headerPrefix)
 		md := metadata.MD{}
 		for key, vals := range r.Header {
-			if strings.HasPrefix(key, headerPrefix) {
-				mdKey := strings.ToLower(key)
+			mdKey := strings.ToLower(key)
+			if strings.HasPrefix(mdKey, lowerPrefix) {
 				md[mdKey] = vals
 			}
 		}

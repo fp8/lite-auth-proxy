@@ -4,6 +4,21 @@
 
 ## gRPC Transcoding Plugin
 
+* **Fix — JWT auth on the gRPC transcode path**: the `grpctranscode` middleware
+  owns every non-health request and never reaches the base handler where JWT
+  validation + `X-AUTH-*` claim injection run, so gRPC-transcoded requests were
+  effectively unauthenticated and forwarded no identity metadata. The middleware
+  now runs the same auth step inline when `auth.jwt.enabled`: it validates the
+  Bearer token, evaluates claim filters, and injects the mapped `X-AUTH-*`
+  headers (which `forward_auth_headers` then forwards as gRPC metadata). Missing
+  or invalid tokens return `401 application/problem+json`.
+* **Fix — `forward_auth_headers` prefix match is case-insensitive**: the metadata
+  builder compared canonical Go header keys (`X-Auth-User-Id`) against the
+  configured prefix (`X-AUTH-`) with a case-sensitive `HasPrefix`, so headers set
+  via `http.Header.Set` were never forwarded. Both sides are now lower-cased
+  before comparison.
+
+
 * **REST/JSON to gRPC transcoding** — new `grpctranscode` plugin (flex build only, priority 95) transcodes inbound REST/JSON requests to unary gRPC calls on upstream backends and gRPC responses back to JSON. Fully generic: learns services, methods, message schemas, and REST mappings at runtime via gRPC server reflection — no per-service code stubs and no transcoding config files.
 * **Three route modes**: `annotation` (reads `google.api.http` method options), `convention` (POST `/<pkg>.<Service>/<Method>`), and `auto` (try annotation, fall back to convention).
 * **Fix — `annotation`/`auto` route discovery over reflection**: `parseHTTPAnnotation` now reads the `google.api.http` binding from the marshaled `MethodOptions` bytes directly. The previous fallback re-parsed into a fresh `MethodOptions` and inspected only `GetUnknown()`, which silently lost the binding whenever the `google.api.http` extension (field 72295728) was registered in the binary's global proto registry — exactly the case for descriptors rebuilt from server reflection — yielding zero routes in annotation mode. Added an integration test (`TestGRPCTranscodeAnnotationMode`) covering annotation-mode discovery, which the convention-only suite did not exercise.
